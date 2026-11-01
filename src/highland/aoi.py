@@ -1,1 +1,1 @@
-"""Load and validate the area of interest and reproject it (AOI file in EPSG:4326, work in EPSG:32644)."""
+"""Load and validate the area of interest; reproject it (stored EPSG:4326, work EPSG:32644)."""
