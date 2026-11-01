@@ -30,6 +30,9 @@ pytest -m "not network and not viewer"    # offline tests (what CI runs)
 pytest -m network                         # tests that need the network (none yet)
 ```
 
+The area of interest is drawn by the owner; see [`data/aoi/README.md`](data/aoi/README.md) and validate it with
+`python -m highland.aoi`.
+
 Optional 3D notebook views and the viewer smoke test (see ADR 0005):
 
 ```bash
