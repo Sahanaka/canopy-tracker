@@ -75,7 +75,7 @@ def test_other_group_is_subset_of_classes() -> None:
         ("bad_vocab", "'openness_method' value 'eyeball'"),
         ("bad_vocab", "'secondary_class' value 'banana'"),
         ("missing_required", "required field 'observer' is empty"),
-        ("missing_required", "required field 'canopy_open_pct' is empty"),
+        ("missing_required", "'canopy_open_pct' is empty"),
         ("pct_out_of_range", "value 120 is outside 0-100"),
         ("pct_out_of_range", "value -5 is outside 0-100"),
         ("pct_out_of_range", "not a whole number"),
@@ -182,3 +182,113 @@ def test_main_exit_codes(capsys: pytest.CaptureFixture[str], monkeypatch) -> Non
     assert main([str(fx("multi_error"))]) == 1
     assert "3 problem(s)" in capsys.readouterr().out
     assert main(["/nonexistent/x.geojson"]) == 1
+
+
+def _write(
+    tmp_path: Path, features: list[dict], name: str = "t.geojson", dlon: float = 0.0
+) -> Path:
+    """Write a synthetic file: each dict overrides the properties of a valid base point."""
+    import json
+
+    base = json.loads(fx("valid").read_text())["features"][4]["properties"]  # tea point
+    feats = []
+    for i, over in enumerate(features):
+        props = {**base, "point_id": f"t-{i}", **over}
+        lon = 80.91 + dlon + 0.005 * i
+        feats.append(
+            {
+                "type": "Feature",
+                "properties": props,
+                "geometry": {"type": "Point", "coordinates": [lon, 6.83]},
+            }
+        )
+    path = tmp_path / name
+    path.write_text(json.dumps({"type": "FeatureCollection", "features": feats}))
+    return path
+
+
+def test_padded_values_are_stripped_not_nan(aoi: gpd.GeoDataFrame, tmp_path: Path) -> None:
+    f = _write(
+        tmp_path,
+        [
+            {
+                "class": " pine",
+                "opened": "yes ",
+                "openness_method": " glama",
+                "secondary_class": " tea ",
+            }
+        ],
+    )
+    pts = load_field_points(f, aoi=aoi, now=NOW)
+    assert pts.loc[0, "class"] == "pine"
+    assert pts.loc[0, "opened"] == "yes"
+    assert pts.loc[0, "openness_method"] == "glama"
+    assert pts.loc[0, "secondary_class"] == "tea"
+    for c in ("class", "opened", "openness_method"):
+        assert not pts[c].isna().any()
+
+
+def test_valid_fixture_required_categoricals_have_no_nan(aoi: gpd.GeoDataFrame) -> None:
+    pts = load_field_points(fx("valid"), aoi=aoi, now=NOW)
+    assert not pts[["class", "opened", "openness_method"]].isna().any().any()
+
+
+def test_private_flag_and_source_file(aoi: gpd.GeoDataFrame, tmp_path: Path) -> None:
+    priv = tmp_path / "private"
+    priv.mkdir()
+    pub = _write(tmp_path, [{}], "pub.geojson")
+    prv = _write(priv, [{"point_id": "p-1"}], "mine.geojson", dlon=0.05)
+    pts = load_field_points([pub, prv], aoi=aoi, now=NOW).set_index("point_id")
+    assert not pts.loc["t-0", "private"]
+    assert pts.loc["p-1", "private"]
+    assert pts.loc["p-1", "source_file"] == "private/mine.geojson"
+    assert pts.loc["t-0", "source_file"] == "pub.geojson"
+    assert pts["private"].dtype == bool
+
+
+def test_repo_relative_source_file(aoi: gpd.GeoDataFrame) -> None:
+    # fixtures are outside data/field, so they fall back to the file name
+    pts = load_field_points(fx("valid"), aoi=aoi, now=NOW)
+    assert not pts["private"].any()
+
+
+@pytest.mark.parametrize(
+    ("over", "rule"),
+    [
+        ({"class": "pine", "secondary_class": "pine"}, "repeats 'class'"),
+        ({"secondary_class": "unsure"}, "cannot be 'unsure'"),
+        ({"opened": "no", "opened_years_ago": 3}, "only allowed when 'opened' is yes"),
+        ({"opened": "unsure", "opened_years_ago": 3}, "only allowed when 'opened' is yes"),
+        ({"opened": "yes", "opened_years_ago": -1}, "must be 0 or more"),
+        ({"opened": "yes", "opened_years_ago": 2.5}, "not a whole number"),
+        ({"openness_method": "not_measured", "canopy_open_pct": 40}, "must be empty"),
+        ({"openness_method": "visual", "canopy_open_pct": None}, "enter 0-100"),
+        ({"gps_time_utc": "2026-05-01 04:45"}, "'gps_time_utc'"),
+    ],
+)
+def test_new_rules(over: dict, rule: str, aoi: gpd.GeoDataFrame, tmp_path: Path) -> None:
+    f = _write(tmp_path, [over])
+    with pytest.raises(FieldDataError) as ei:
+        load_field_points(f, aoi=aoi, now=NOW)
+    assert any(rule in m for m in ei.value.problems), ei.value.problems
+
+
+def test_not_measured_and_years_ago_accepted(aoi: gpd.GeoDataFrame, tmp_path: Path) -> None:
+    f = _write(
+        tmp_path,
+        [
+            {"openness_method": "not_measured", "canopy_open_pct": None},
+            {"opened": "yes", "opened_years_ago": 4, "gps_time_utc": "2026-05-01T04:45:10Z"},
+        ],
+    )
+    pts = load_field_points(f, aoi=aoi, now=NOW)
+    assert pd.isna(pts.loc[0, "canopy_open_pct"])
+    assert pts["canopy_open_pct"].dtype == "Int16"
+    assert pts.loc[1, "opened_years_ago"] == 4
+    assert pd.isna(pts.loc[0, "gps_time_utc"])
+    assert pts.loc[1, "gps_time_utc"] == pd.Timestamp("2026-05-01T04:45:10Z")
+
+
+def test_reference_classes() -> None:
+    assert "unsure" not in hio.REFERENCE_CLASSES
+    assert set(hio.REFERENCE_CLASSES) | {"unsure"} == set(hio.FIELD_CLASSES)

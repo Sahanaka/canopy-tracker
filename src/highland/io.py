@@ -37,22 +37,36 @@ FIELD_CLASSES: tuple[str, ...] = (
 # Codes that collapse into the single Module B class "other" when M2.3 wants the coarse scheme.
 OTHER_GROUP: frozenset[str] = frozenset({"tea", "grassland", "settlement", "other"})
 OPENED_VALUES: tuple[str, ...] = ("yes", "no", "unsure")
-OPENNESS_METHODS: tuple[str, ...] = ("visual", "glama")
+OPENNESS_METHODS: tuple[str, ...] = ("visual", "glama", "not_measured")
+# Classes usable as reference labels; `unsure` is excluded from training/accuracy, counted apart.
+REFERENCE_CLASSES: tuple[str, ...] = tuple(c for c in FIELD_CLASSES if c != "unsure")
 REQUIRED_FIELDS: tuple[str, ...] = (
     "point_id",
     "observed_at",
     "observer",
     "class",
     "opened",
-    "canopy_open_pct",
     "openness_method",
 )
+# canopy_open_pct must exist as a column but is required per row only unless openness_method is
+# "not_measured" (then it must be empty).
+OPENNESS_COLUMN = "canopy_open_pct"
 PHOTO_FIELDS: tuple[str, ...] = ("photo_1", "photo_2", "photo_3")
 PHOTO_EXTENSIONS: tuple[str, ...] = (".jpg", ".jpeg", ".png")
 _KNOWN_FIELDS = frozenset(
     REQUIRED_FIELDS
     + PHOTO_FIELDS
-    + ("secondary_class", "patch_id", "gps_accuracy_m", "position_source", "notes", "geometry")
+    + (
+        "canopy_open_pct",
+        "secondary_class",
+        "patch_id",
+        "opened_years_ago",
+        "gps_accuracy_m",
+        "gps_time_utc",
+        "position_source",
+        "notes",
+        "geometry",
+    )
 )
 _FORM_HINT = "see docs/field/form.md"
 
@@ -145,6 +159,10 @@ def _check_row(
         if f in row.index and _is_null(row[f]):
             bad(f"required field '{f}' is empty")
 
+    def text(f: str) -> str | None:
+        v = row.get(f)
+        return None if _is_null(v) else str(v).strip()
+
     geom = row.geometry
     pt: Point | None = None
     if geom is None or geom.is_empty:
@@ -179,25 +197,68 @@ def _check_row(
         "opened": OPENED_VALUES,
         "openness_method": OPENNESS_METHODS,
     }
+    clean: dict[str, Any] = {}
+    for f in ("point_id", "observer", "patch_id", "position_source", "notes"):
+        clean[f] = text(f)
     for f, allowed in vocab.items():
-        v = row.get(f)
-        if f in row.index and not _is_null(v) and str(v).strip() not in allowed:
-            bad(f"'{f}' value '{v}' is not allowed; use one of {', '.join(allowed)}")
+        v = text(f)
+        clean[f] = v
+        if v is not None and v not in allowed:
+            bad(f"'{f}' value '{row.get(f)}' is not allowed; use one of {', '.join(allowed)}")
+            clean[f] = None
+    cls, sec = clean["class"], clean["secondary_class"]
+    if sec is not None and sec == cls:
+        bad(
+            f"'secondary_class' repeats 'class' ('{sec}'); leave it empty or name another component"
+        )
+    if sec == "unsure":
+        bad("'secondary_class' cannot be 'unsure'; leave it empty")
 
-    pct = row.get("canopy_open_pct")
-    pct_val: int | None = None
-    if not _is_null(pct):
+    def whole(f: str, v: Any) -> int | None:
         try:
-            x = float(pct)
+            x = float(v)
             if not x.is_integer():
                 raise ValueError
-            pct_val = int(x)
+            return int(x)
         except (TypeError, ValueError):
-            bad(f"'canopy_open_pct' value '{pct}' is not a whole number 0-100")
+            bad(f"'{f}' value '{v}' is not a whole number")
+            return None
+
+    pct = row.get(OPENNESS_COLUMN)
+    pct_val: int | None = None
+    if clean["openness_method"] == "not_measured":
+        if not _is_null(pct):
+            bad("'canopy_open_pct' must be empty when 'openness_method' is not_measured")
+    elif clean["openness_method"] in OPENNESS_METHODS:
+        if _is_null(pct):
+            bad("'canopy_open_pct' is empty; enter 0-100 or set openness_method to not_measured")
         else:
-            if not 0 <= pct_val <= 100:
+            pct_val = whole(OPENNESS_COLUMN, pct)
+            if pct_val is not None and not 0 <= pct_val <= 100:
                 bad(f"'canopy_open_pct' value {pct_val} is outside 0-100")
                 pct_val = None
+
+    yrs = row.get("opened_years_ago")
+    yrs_val: int | None = None
+    if not _is_null(yrs):
+        yrs_val = whole("opened_years_ago", yrs)
+        if yrs_val is not None and yrs_val < 0:
+            bad(f"'opened_years_ago' value {yrs_val} must be 0 or more (whole years)")
+            yrs_val = None
+        if clean["opened"] != "yes":
+            bad("'opened_years_ago' is only allowed when 'opened' is yes")
+            yrs_val = None
+
+    gps_time: pd.Timestamp | None = None
+    graw = row.get("gps_time_utc")
+    if not _is_null(graw):
+        try:
+            g = datetime.fromisoformat(str(graw).strip())
+            if g.tzinfo is None:
+                raise ValueError
+            gps_time = pd.Timestamp(g).tz_convert("UTC")
+        except ValueError:
+            bad(f"'gps_time_utc' value '{graw}' is not an ISO 8601 date-time with offset (or Z)")
 
     acc = row.get("gps_accuracy_m")
     acc_val = float("nan")
@@ -246,9 +307,18 @@ def _check_row(
             else:
                 photos.append(v)
 
-    if len(problems) > n0 or pt is None or when is None or pct_val is None:
+    if len(problems) > n0 or pt is None or when is None:
         return None
-    return {"geometry": pt, "observed_at": when, "pct": pct_val, "acc": acc_val, "photos": photos}
+    return {
+        **clean,
+        "geometry": pt,
+        "observed_at": when,
+        "pct": pct_val,
+        "yrs": yrs_val,
+        "gps_time": gps_time,
+        "acc": acc_val,
+        "photos": photos,
+    }
 
 
 def load_field_points(
@@ -278,6 +348,7 @@ def load_field_points(
     problems: list[str] = []
     rows: list[dict[str, Any]] = []
     seen_ids: dict[str, str] = {}
+    field_dir = default_field_dir().resolve()
     seen_geo: dict[tuple[bytes, pd.Timestamp], str] = {}
     for p in files:
         try:
@@ -294,13 +365,18 @@ def load_field_points(
                 f"expected {AOI_CRS}. Re-export with CRS EPSG:4326; it is not reprojected silently."
             )
             continue
+        private = p.resolve().parent.name == "private"
+        try:
+            source = p.resolve().relative_to(field_dir).as_posix()
+        except ValueError:
+            source = f"private/{p.name}" if private else p.name
         extra = sorted(set(gdf.columns) - _KNOWN_FIELDS)
         if extra:
             log.info("%s: keeping extra properties %s", p.name, extra)
         if len(gdf) == 0:
             log.info("%s: no features", p.name)
             continue
-        missing = [f for f in REQUIRED_FIELDS if f not in gdf.columns]
+        missing = [f for f in (*REQUIRED_FIELDS, OPENNESS_COLUMN) if f not in gdf.columns]
         if missing:
             problems.append(
                 f"{p.name}: required column(s) missing: {', '.join(missing)}. "
@@ -331,7 +407,8 @@ def load_field_points(
                 {
                     **row.drop(labels=["geometry", *PHOTO_FIELDS], errors="ignore").to_dict(),
                     **parsed,
-                    "source_file": p.name,
+                    "source_file": source,
+                    "private": private,
                 }
             )
 
@@ -339,21 +416,19 @@ def load_field_points(
         raise FieldDataError(problems)
 
     cols = [
-        c
-        for c in (
-            REQUIRED_FIELDS
-            + ("secondary_class", "patch_id", "gps_accuracy_m", "position_source", "notes")
-        )
-        if True
+        *REQUIRED_FIELDS,
+        "secondary_class",
+        "patch_id",
+        "position_source",
+        "notes",
     ]
-    extras = sorted(
-        {k for r in rows for k in r}
-        - set(cols)
-        - {"geometry", "pct", "acc", "photos", "observed_at", "source_file"}
-    )
+    handled = {"geometry", "pct", "yrs", "gps_time", "acc", "photos", "observed_at"}
+    handled |= {"source_file", "private", OPENNESS_COLUMN, "opened_years_ago", "gps_accuracy_m"}
+    handled |= {"gps_time_utc"}
+    extras = sorted({k for r in rows for k in r} - set(cols) - handled)
     data: dict[str, Any] = {}
     for c in cols + extras:
-        if c in ("observed_at", "canopy_open_pct", "gps_accuracy_m"):
+        if c == "observed_at":
             continue
         data[c] = [None if _is_null(r.get(c)) else r.get(c) for r in rows]
     out = gpd.GeoDataFrame(data, geometry=[r["geometry"] for r in rows], crs=AOI_CRS)
@@ -361,7 +436,10 @@ def load_field_points(
     out["canopy_open_pct"] = pd.array([r["pct"] for r in rows], dtype="Int16")
     out["gps_accuracy_m"] = pd.array([r["acc"] for r in rows], dtype="Float32")
     out["photos"] = [r["photos"] for r in rows]
+    out["opened_years_ago"] = pd.array([r["yrs"] for r in rows], dtype="Int16")
+    out["gps_time_utc"] = pd.to_datetime([r["gps_time"] for r in rows], utc=True)
     out["source_file"] = [r["source_file"] for r in rows]
+    out["private"] = pd.array([r["private"] for r in rows], dtype=bool)
     for c, cats in (
         ("class", FIELD_CLASSES),
         ("secondary_class", FIELD_CLASSES),
@@ -369,6 +447,9 @@ def load_field_points(
         ("openness_method", OPENNESS_METHODS),
     ):
         out[c] = pd.Categorical(out[c], categories=list(cats))
+    for c in ("class", "opened", "openness_method"):
+        if out[c].isna().any():  # safety net: a required code must never become NaN silently
+            raise FieldDataError([f"'{c}' has values that could not be matched to the vocabulary"])
     return out
 
 
