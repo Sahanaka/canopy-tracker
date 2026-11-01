@@ -16,6 +16,9 @@ other part of the project clips to. No coordinates are hard-coded anywhere else.
 - **geojson.io:** draw one polygon, then Save -> GeoJSON.
 - **QGIS:** create a polygon layer, draw one polygon, then Export -> Save Features As -> GeoJSON, CRS EPSG:4326,
   layer option `RFC7946=YES`.
+- Before exporting, make sure the layer CRS really is EPSG:4326 (WGS 84), not Kandawala (EPSG:4244) or SLD99
+  (EPSG:5233). A file without a `crs` member is read as WGS 84, so a polygon drawn in another datum and saved
+  without one would pass validation shifted by hundreds of metres; the validator cannot detect this.
 
 ## Validating it
 

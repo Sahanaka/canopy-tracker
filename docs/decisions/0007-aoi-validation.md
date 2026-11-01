@@ -27,6 +27,9 @@ the roadmap, not derived from data. No satellite data is involved.
 - **D4 Wrong declared CRS:** a legacy `crs` member that GDAL honours (for example EPSG:32644) is rejected with
   "re-export as EPSG:4326", not reprojected. The CRS check compares the datum (WGS84) and requires a geographic CRS,
   not the EPSG code, because GDAL labels 3-D GeoJSON as EPSG:4979.
+  Only the WGS84 ensemble passes; Kandawala (EPSG:4244), SLD99 (EPSG:5233), Everest-based CRSs and named WGS84
+  realisations or ITRF frames are rejected. A compound CRS whose horizontal part is WGS84 (e.g. EPSG:9518) is
+  accepted; its vertical part is discarded along with Z, and the result is labelled EPSG:4326.
 - **D5 Default path:** repo-relative from `__file__`; valid for the editable install (ADR 0004). Other installs pass
   `path=`. No environment-variable override.
 - **D6 Owner instructions:** `data/aoi/README.md`, linked from the top-level README. `python -m highland.aoi [path]`

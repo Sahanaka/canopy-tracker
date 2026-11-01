@@ -40,7 +40,7 @@ def to_utm(aoi: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 
 
 def aoi_area_km2(aoi: gpd.GeoDataFrame) -> float:
-    """Return the planar AOI area in EPSG:32644, in km^2 (0.02-0.08 % below ellipsoidal area)."""
+    """Return the planar AOI area in EPSG:32644, in km^2 (0.03-0.08 % below ellipsoidal area)."""
     return float(to_utm(aoi).area.sum() / 1e6)
 
 
