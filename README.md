@@ -11,7 +11,9 @@ The badge shows CI on the integration branch `task/M0.0-kit-setup`.
 
 ## How to run
 
-Create the pinned environment (Python 3.13, see `environment.yml`) and activate it:
+Create the pinned environment (Python 3.13, see `environment.yml`) and activate it. Only direct dependencies and the listed geospatial libraries are pinned; other transitive
+dependencies float (there is no lockfile, see [ADR 0004](docs/decisions/0004-environment-pinning.md)). To record the
+environment behind a result, follow the explicit-export rule in [`outputs/README.md`](outputs/README.md).
 
 ```bash
 micromamba create -f environment.yml      # or: conda env create -f environment.yml
