@@ -79,6 +79,8 @@ Notes on the entries:
 
 In QGIS: right-click the layer, Export, Save Features As, format GeoJSON, CRS EPSG:4326, layer option `RFC7946=YES`.
 Save public points as `data/field/<date>-<name>.geojson` and private-land points into `data/field/private/`.
+The `private` flag comes only from that folder: a private-land file kept or passed from anywhere else is
+treated as public, so always move it into `data/field/private/` before validating or analysing.
 
 ## Check the file
 

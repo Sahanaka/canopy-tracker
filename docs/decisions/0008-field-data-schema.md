@@ -40,8 +40,10 @@ ADR once there is data). Sources are listed in `docs/plans/M0.4.md`.
 - The owner sees every problem in one run (`python -m highland.io <file>`), naming file, point, rule and value.
 - Rules are checked by synthetic fixtures in `tests/fixtures/field/`; `tests/test_field_files.py` guards committed
   real files and skips while there are none.
-- Unverified until a real device is used: the QField default photo file name and the `format_date` default for
-  `observed_at` (syntax checked against the QGIS 3.44 function list only). Revisit D5/D6 after the first trip.
+- Unverified until a real device is used: the QField default photo file name, the `format_date` default for
+  `observed_at` (syntax checked against the QGIS 3.44 function list only), and the text format QGIS writes for
+  `@position_timestamp` into `gps_time_utc` (if it has no offset, every row is rejected; check on the first trip).
+- `gps_time_utc` is stored only; comparing it with `observed_at` needs a tolerance in its own ADR (M1.9). Revisit D5/D6 after the first trip.
 - Revisit D2 if the Random Forest needs classes the form cannot give, and D4 if visual estimates prove too noisy.
 - Patch-visit sampling (M1.9) measures commission error only and is road-side biased; omission needs `opened = no`
   points outside mapped patches. `patch_id` is free text that M1.9 must check against the M1.7 patch ids.
