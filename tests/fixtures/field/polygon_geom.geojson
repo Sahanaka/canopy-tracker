@@ -1,0 +1,48 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {
+    "point_id": "syn-001",
+    "observed_at": "2026-05-01T10:15:00+05:30",
+    "observer": "AB",
+    "class": "pine",
+    "secondary_class": null,
+    "opened": "no",
+    "patch_id": null,
+    "canopy_open_pct": 30,
+    "openness_method": "visual",
+    "photo_1": null,
+    "photo_2": null,
+    "photo_3": null,
+    "gps_accuracy_m": 4.5,
+    "position_source": "internal",
+    "notes": null
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       80.93,
+       6.83
+      ],
+      [
+       80.94,
+       6.83
+      ],
+      [
+       80.94,
+       6.84
+      ],
+      [
+       80.93,
+       6.83
+      ]
+     ]
+    ]
+   }
+  }
+ ]
+}
