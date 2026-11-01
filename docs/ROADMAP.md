@@ -5,7 +5,7 @@ Tasks marked **[human]** need the owner (field work, drawing, decisions); agents
 
 ## Milestone 0 — Foundations
 
-- [ ] **M0.1 Package and environment**
+- [x] **M0.1 Package and environment**
   - `environment.yml` with pinned versions of the stack in CLAUDE.md; `pyproject.toml` installing `src/highland` in editable mode.
   - `ruff`, `pytest`, `nbstripout`, `pre-commit` configured; `pre-commit run --all-files` passes.
   - `src/highland/__init__.py` and empty module stubs from the CLAUDE.md layout; one passing smoke test.

@@ -32,7 +32,7 @@ The full plan lives in the owner's planning doc; `docs/ROADMAP.md` is the in-rep
 
 ## Stack
 
-Python 3.11+, `pystac-client`, `planetary-computer`, `odc-stac`, `xarray`, `rioxarray`, `dask`,
+Python 3.12+, `pystac-client`, `planetary-computer`, `odc-stac`, `xarray`, `rioxarray`, `dask`,
 `geopandas`, `shapely`, `rasterio`, `numpy`, `scikit-learn` (Milestone 2), `matplotlib`, JupyterLab.
 Tooling: `ruff` (lint + format), `pytest`, `nbstripout`, `pre-commit`. Environment in `environment.yml`.
 3D: `pyvista` (+ `trame` for Jupyter) for notebook views; the web viewer is plain HTML/JS with MapLibre GL JS
