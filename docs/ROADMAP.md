@@ -9,7 +9,7 @@ Tasks marked **[human]** need the owner (field work, drawing, decisions); agents
   - `environment.yml` with pinned versions of the stack in CLAUDE.md; `pyproject.toml` installing `src/highland` in editable mode.
   - `ruff`, `pytest`, `nbstripout`, `pre-commit` configured; `pre-commit run --all-files` passes.
   - `src/highland/__init__.py` and empty module stubs from the CLAUDE.md layout; one passing smoke test.
-- [ ] **M0.2 CI**
+- [x] **M0.2 CI**
   - GitHub Actions workflow running ruff and `pytest -m "not network"` on push and PR (micromamba or pip).
   - README badge and a "How to run" section.
 - [ ] **M0.3 AOI** **[human draws, agent validates]**

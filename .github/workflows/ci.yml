@@ -2,26 +2,58 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # Integration branch (PRs target it; seeds the env cache) and main. Task branches run via their PR only.
+    branches: [task/M0.0-kit-setup, main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Ceiling against hangs, not a measured duration.
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash -el {0}
     steps:
-      - uses: actions/checkout@v4
-      - uses: mamba-org/setup-micromamba@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Week salt: the env cache is rebuilt at least weekly, so floating transitive deps cannot drift for long.
+      - name: Cache week
+        id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
         with:
           environment-file: environment.yml
           cache-environment: true
+          cache-environment-key: env-${{ steps.week.outputs.week }}
+          post-cleanup: none
       - name: Install package
-        run: pip install -e . --no-deps
+        run: pip install -e . --no-deps --no-build-isolation
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml', 'environment.yml') }}
       - name: Lint
-        run: |
-          ruff check .
-          ruff format --check .
+        run: pre-commit run --all-files --show-diff-on-failure
       - name: Tests (offline)
-        run: pytest -m "not network" -q
+        run: pytest -m "not network and not viewer"
+      - name: Resolved environment
+        if: always()
+        run: |
+          micromamba list
+          micromamba env export --explicit > resolved-env.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: resolved-env
+          path: resolved-env.txt
+          if-no-files-found: ignore
