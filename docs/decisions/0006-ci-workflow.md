@@ -24,13 +24,17 @@ ref with cancel-in-progress. `timeout-minutes: 20` is a ceiling against hangs, n
 - **D3 lint:** a single `pre-commit run --all-files --show-diff-on-failure`, so CI and laptops share one config.
   Ruff and nbstripout come from the env's pinned binaries. The pre-commit hook repo is cached.
 - **D4 install:** `pip install -e . --no-deps --no-build-isolation`, using the env's pinned hatchling.
-- **D5 cache:** the env is cached (keyed by the action on the env file hash) and the micromamba version is
-  unpinned. `micromamba list` is printed at the end of each run to tie failures to resolved versions.
+- **D5 cache:** the env is cached and the micromamba version is unpinned. The setup-micromamba key is salted with the
+  ISO year-week (`cache-environment-key: env-<YYYY-Www>`; the action also appends the env file hash), so the env is
+  re-solved at least weekly. The pre-commit hook cache is keyed on `.pre-commit-config.yaml` and `environment.yml`, so
+  hook venvs follow the env's Python. Each run prints `micromamba list` and uploads `micromamba env export --explicit`
+  as the `resolved-env` artifact (actions/upload-artifact v7.0.2, SHA-pinned) to tie failures to resolved versions.
 - Tests: `pytest -m "not network and not viewer"` (ADR 0005).
 
 ## Consequences
 
 Linux-64, Python 3.13 only (ADR 0003); macOS and Windows rely on the M0.1 dry-run solves. A cached env can hide
-breakage from floating transitive deps until it is evicted (7 days unused) or `environment.yml` changes. The first
+breakage from floating transitive deps for up to about a week (the weekly salt); eviction after 7 days unused alone
+would not bound this, because every PR restores the integration-branch cache. The first
 PR runs cold until a push to the integration branch seeds the cache. Lint depends on GitHub for fetching
 `pre-commit-hooks`. A weekly uncached scheduled run could be added later.
