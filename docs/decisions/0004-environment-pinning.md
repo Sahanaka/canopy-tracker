@@ -17,6 +17,10 @@ conda-lock lockfile for four platforms.
   env resolved to: `odc-geo==0.5.3`, `odc-loader==0.6.5`, `pystac==1.15.2`, `pyproj==3.8.0`,
   `libgdal-core==3.13.3`, `proj==9.9.0`, `geos==3.14.1`. The four-platform dry-run solves still succeed.
 - Everything else (e.g. fsspec, aiohttp, jupyter internals, other libs) still floats.
+- Reproducibility is enforced per output: every `outputs/<task-id>/README.md` must record the resolved
+  environment (`micromamba env export --explicit` or `conda list --explicit`, saved alongside; at least the
+  rasterio, GDAL, PROJ and odc-* versions). A move to conda-lock is triggered if a transitive upgrade changes
+  a result.
 - `[project].dependencies` in `pyproject.toml` is empty: the conda env is the single source of truth, and the
   package is installed with `pip install -e . --no-deps`.
 - pre-commit runs ruff and nbstripout as `repo: local`, `language: system` hooks so they use the env's pinned
