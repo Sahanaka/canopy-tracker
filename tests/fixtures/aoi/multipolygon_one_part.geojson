@@ -1,0 +1,1 @@
+{"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"name": "test aoi", "note": "synthetic"}, "geometry": {"type": "MultiPolygon", "coordinates": [[[[80.9, 6.8], [80.99000000000001, 6.8], [80.99000000000001, 6.89], [80.9, 6.89], [80.9, 6.8]]]]}}]}
