@@ -22,6 +22,14 @@ dependencies:
   - scikit-learn==1.9.1
   - matplotlib==3.11.2
   - jupyterlab==4.6.4
+  # transitive packages pinned because they decide pixel values / alignment (see ADR 0004)
+  - odc-geo==0.5.3
+  - odc-loader==0.6.5
+  - pystac==1.15.2
+  - pyproj==3.8.0
+  - libgdal-core==3.13.3
+  - proj==9.9.0
+  - geos==3.14.1
   # tooling
   - ruff==0.17.1
   - pytest==9.1.1

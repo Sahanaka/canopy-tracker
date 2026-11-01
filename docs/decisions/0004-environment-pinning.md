@@ -12,7 +12,11 @@ conda-lock lockfile for four platforms.
 ## Decision
 
 - `environment.yml` uses exact `==` pins on every direct dependency (conda-forge only, `nodefaults`).
-  No lockfile yet. Transitive packages (GDAL, PROJ, GEOS) still float.
+  No lockfile yet.
+- Transitive packages that decide pixel values or grid alignment are also pinned, at the versions the linux-64
+  env resolved to: `odc-geo==0.5.3`, `odc-loader==0.6.5`, `pystac==1.15.2`, `pyproj==3.8.0`,
+  `libgdal-core==3.13.3`, `proj==9.9.0`, `geos==3.14.1`. The four-platform dry-run solves still succeed.
+- Everything else (e.g. fsspec, aiohttp, jupyter internals, other libs) still floats.
 - `[project].dependencies` in `pyproject.toml` is empty: the conda env is the single source of truth, and the
   package is installed with `pip install -e . --no-deps`.
 - pre-commit runs ruff and nbstripout as `repo: local`, `language: system` hooks so they use the env's pinned
