@@ -31,6 +31,22 @@ what to write to disk, and which item list to read. This ADR also records two ch
   where the two resamplers treat the edge differently). Because the offset is affine and constant, applying it after
   interpolation equals interpolating after applying it.
 
+### Source-nodata check (fix loop 1, 2026-11-02)
+
+Some assets declare no nodata (the 02.12 files, some 05.13 files, S2C 2026-09-08). odc-stac 0.5.3 then warped them with no
+source nodata, so DN 0 in B8A/B11/B12 (and SCL class 0) became 1 and was blended into neighbours by bilinear resampling
+(repro: 2016-04-26, 02.12, where the 10 m bands were 0 and nir08/swir16/swir22 came back as 1). `stac.load_s2_acquisition` now
+reads every asset with source nodata 0 (a rasterio driver subclass that sets `src_nodata_override = 0`). To check the effect
+on the first outputs, all 43 window-years were rerun cold into a scratch directory (3052 s) and compared with the first run:
+127 of 129 GeoTIFFs are byte-identical, and so are all 43 clear-mask files, every `n_obs`/`thin`/`window_day_median` band and
+every NDVI and EVI band. Only `s2_2026_SWM_indices.tif` and `s2_2026_SWM_reflectance.tif` differ: in SWM 2026, whose
+2026-09-08 scene has 20 % no-data, 576 NDMI, 677 NBR, 631 nir08, 1020 swir16 and 858 swir22 pixels (each at most 0.1 % of the
+AOI) changed value, with no pixel changing between NaN and finite. The largest differences are 0.093 (NDMI), 0.135 (NBR) and
+0.030 / 0.027 / 0.017 (nir08 / swir16 / swir22 reflectance); medians 0.003, 0.005 and about 0.0025. The composite summary moved
+only in the fourth decimal (SWM 2026 NDMI median 0.24341 to 0.24340, NBR median 0.49700 to 0.49699). The corrected files
+replaced the first ones; no other number in this ADR changed. `scl_share_0` in `scenes_used.csv` now reports class 0 correctly
+(for 2026-09-08 it is 0.203 instead of 0).
+
 ### D2 Composite statistic: median of per-scene indices; per-band median reflectance for display
 
 - The four indices are computed per scene from that scene's reflectance and the per-pixel **median across the scenes' index
