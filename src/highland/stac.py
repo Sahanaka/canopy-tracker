@@ -14,6 +14,7 @@ import geopandas as gpd
 import pandas as pd
 import pystac
 import pystac_client
+import xarray as xr
 from affine import Affine
 from odc.geo.geobox import GeoBox
 from shapely.geometry import shape
@@ -30,6 +31,19 @@ LOCAL_TZ = ZoneInfo("Asia/Colombo")  # Sri Lanka local time, for the solar day o
 # Native grid asset per sensor: SCL (20 m) and QA_PIXEL (30 m).
 GRID_ASSET = {"s2": "SCL", "landsat": "qa_pixel"}
 NATIVE_RESOLUTION_M = {"s2": 20.0, "landsat": 30.0}
+
+# Internal band name -> Planetary Computer asset key (Earth Search mapping is not needed in M1.2).
+S2_BANDS: dict[str, str] = {
+    "blue": "B02",
+    "green": "B03",
+    "red": "B04",
+    "nir": "B08",
+    "nir08": "B8A",
+    "swir16": "B11",
+    "swir22": "B12",
+}
+S2_NATIVE_10M = frozenset({"B02", "B03", "B04", "B08"})  # all others (B8A, B11, B12, SCL) are 20 m
+S2_SCL_ASSET = "SCL"
 
 
 def open_client(url: str = PC_STAC_URL) -> pystac_client.Client:
@@ -225,12 +239,22 @@ def native_grid(item: pystac.Item, asset: str) -> tuple[str, Affine]:
     return str(code), Affine(*tr[:6])
 
 
-def aoi_geobox(aoi: gpd.GeoDataFrame, items: Sequence[pystac.Item], sensor: str) -> GeoBox:
-    """Return the EPSG:32644 GeoBox of the AOI bbox snapped outward to the native grid (m)."""
+def aoi_geobox(
+    aoi: gpd.GeoDataFrame,
+    items: Sequence[pystac.Item],
+    sensor: str,
+    asset: str | None = None,
+    resolution: float | None = None,
+) -> GeoBox:
+    """Return the EPSG:32644 GeoBox of the AOI bbox snapped outward to an asset grid (m).
+
+    Defaults to the sensor's native grid asset (S2 SCL 20 m, Landsat QA_PIXEL 30 m); pass
+    asset="B02", resolution=10.0 for the 10 m Sentinel-2 grid.
+    """
     if not items:
         raise ValueError("No items to take a native grid from.")
-    asset = GRID_ASSET[sensor]
-    res = NATIVE_RESOLUTION_M[sensor]
+    asset = asset or GRID_ASSET[sensor]
+    res = resolution or NATIVE_RESOLUTION_M[sensor]
     grids = [native_grid(i, asset) for i in items]
     crs0, t0 = grids[0]
     for it, (_, t) in zip(items, grids, strict=True):
@@ -255,3 +279,50 @@ def aoi_geobox(aoi: gpd.GeoDataFrame, items: Sequence[pystac.Item], sensor: str)
     nx = round((right - left) / res)
     ny = round((top - bottom) / res)
     return GeoBox((ny, nx), Affine(res, 0.0, left, 0.0, -res, top), WORK_CRS)
+
+
+def load_s2_acquisition(
+    items: Sequence[pystac.Item], geobox: GeoBox, bands: Sequence[str] = tuple(S2_BANDS)
+) -> xr.Dataset:
+    """Lazily load one S2 acquisition as raw uint16 DN (bands, 10 m grid) plus uint8 'scl'.
+
+    Variables are named by internal band name (S2_BANDS keys) and 'scl'; 20 m bands are resampled
+    bilinearly, SCL and 10 m bands with nearest. No scale or offset is applied (see
+    masking.s2_dn_to_reflectance). Dataset attr 'baseline' is the single processing baseline.
+    """
+    import odc.stac
+    import planetary_computer
+
+    unknown = [b for b in bands if b not in S2_BANDS]
+    if unknown:
+        raise ValueError(f"Unknown S2 bands {unknown}; expected some of {list(S2_BANDS)}.")
+    baselines = {str(i.properties["s2:processing_baseline"]) for i in items}
+    if len(baselines) != 1:
+        raise ValueError(f"Items of one acquisition differ in processing baseline: {baselines}.")
+    assets = [S2_BANDS[b] for b in bands]
+    cfg = {
+        "*": {
+            "assets": {
+                **{a: {"data_type": "uint16", "nodata": 0} for a in assets},
+                S2_SCL_ASSET: {"data_type": "uint8", "nodata": 0},
+            }
+        }
+    }
+    resampling = {a: ("nearest" if a in S2_NATIVE_10M else "bilinear") for a in assets}
+    resampling[S2_SCL_ASSET] = "nearest"  # class codes: never interpolate
+    signed = [planetary_computer.sign(i) for i in items]  # sign just before reading (SAS expiry)
+    ds = odc.stac.load(
+        signed,
+        bands=[*assets, S2_SCL_ASSET],
+        geobox=geobox,
+        groupby="solar_day",
+        resampling=resampling,
+        stac_cfg=cfg,
+        chunks={"x": 512, "y": 512},
+        fail_on_error=True,
+    )
+    if ds.sizes["time"] != 1:
+        raise RuntimeError(f"Expected 1 time slice for one acquisition, got {ds.sizes['time']}.")
+    ds = ds.rename({a: b for b, a in S2_BANDS.items() if a in assets} | {S2_SCL_ASSET: "scl"})
+    ds.attrs["baseline"] = baselines.pop()
+    return ds
