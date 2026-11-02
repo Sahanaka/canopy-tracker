@@ -63,6 +63,14 @@ what to write to disk, and which item list to read. This ADR also records two ch
   values cannot reject a contaminated one (the test suite shows a single outlier is rejected among 3 and not among 2).
 - Per window-year: `thin_season_year` = the median `n_obs` over AOI pixels is <= 2, and `share_thin_1_2`, `share_zero_obs`
   and `share_le2_obs` are written for every window-year so any other cut can be applied later.
+- **`n_obs >= 3` does not guarantee a cloud-free median.** The median rejects a contaminated value only while most of a
+  pixel's observations are clean; where most observations are cloud or haze that SCL missed, three or more of them still give
+  a contaminated median. Diagnostic (recomputed from the written composites on 2026-11-02; a diagnostic, not a threshold or a
+  rule used anywhere in the code): the share of AOI pixels whose median blue reflectance exceeds 0.15 is 0.36 % on average in
+  the SWM composites (0.26-0.60 %), but 3.50 % in SIM 2025, 3.70 % in FIM 2022, 2.07 % in SIM 2022 (41 % of those pixels have
+  n_obs >= 3) and 1.28 % in SIM 2024. The blue value 0.15 is a screening level chosen only to show the contrast between
+  windows; it is not validated as a cloud test. Users should read `share_le2_obs` (and `thin`) per window and cross-check a
+  suspicious pixel against the same season in neighbouring years and against the other windows of the same year.
 - No extra screening in M1.2 (no temporal-outlier rule, spectral rule or SCL buffer): each would need a k, a buffer or a
   threshold that this data cannot ground. Revisit if field checks show cloud leakage.
 
@@ -90,7 +98,11 @@ outside [-1, 1] is written per composite and index. Over the 43 composites:
 EVI is the only index with visible leakage: its denominator `NIR + 6 Red - 7.5 Blue + 1` approaches 0 for dark, blue-bright
 pixels, giving values up to 3.1e5 in magnitude (|EVI| > 1000 somewhere in 6 composites: SIM 2018, 2021, 2023, 2024, 2025 and FIM 2022). The single-
 pixel extremes of the other indices also leave [-1, 1] (NDVI minimum -8.87 in FIM 2024, maximum 1.018 in SIM 2024), which only
-happens when kept negative reflectance makes a sum small. Users of EVI should mask or winsorise explicitly and say so.
+happens when kept negative reflectance makes a sum small. Users of EVI should mask or winsorise explicitly and say so. **EVI is not used for disturbance detection in M1.x without a
+mask, and any EVI masking rule needs its own ADR.** The thin flag does not remove these pixels: of the pixels with |EVI| > 1,
+100 % have n_obs >= 3 in SWM 2023 (24 pixels, 0.002 % of the AOI) and 81 % in FIM 2024 (59 pixels). In SIM they are
+mostly thin (for example 3 % have n_obs >= 3 in SIM 2025), and the largest share of the AOI with |EVI| > 1 is 0.088 % (FIM 2022,
+882 pixels).
 NDVI value ranges over the composites (percentiles over AOI pixels): 1st percentile 0.11-0.25, median 0.63-0.78, 99th
 percentile 0.84-0.90, a range that is plausible for vegetated hills with some tea, grass and bare ground (not validated). The lowest medians
 (SIM 2016 0.63, SIM 2025 0.64, SIM 2020 0.66) are thin or cloud-affected windows.
@@ -105,9 +117,14 @@ own item ids and its parameters in `meta/` and in the GeoTIFF tags, and is recom
 
 ## Measured cost (one sandbox, 4 cores, Planetary Computer over the network, 4 dask threads)
 
-- Pilot, cold: SIM 2023 (12 scenes) 58 s, peak RSS 1.2 GB; SWM 2023 (30 scenes) 132 s, peak RSS 2.6 GB.
-- Full run, cold: 43 window-years, 691 acquisitions, 2970 s (49.5 min), peak RSS 3.4 GB (SWM 2025, 39 scenes). About 4.3 s per
-  acquisition. Output 1.81 GB.
+Three different runs, kept apart (the README in `outputs/M1.2` labels them the same way):
+
+- **Scripted pilot, cold:** SIM 2023 (12 scenes) 58 s, peak RSS 1.2 GB; SWM 2023 (30 scenes) 132 s, peak RSS 2.6 GB.
+- **Scripted full run, cold:** 43 window-years, 691 acquisitions, 2970 s (49.5 min), peak RSS 3.4 GB (SWM 2025, 39 scenes).
+  About 4.3 s per acquisition. Output 1.81 GB.
+- **Notebook execution** (`notebooks/02_s2_composites.ipynb`, cold pilot in a scratch directory, then a resumed loop): its own
+  pilot timings and kernel peak RSS are in the README it writes; they differ slightly from the scripted pilot (other load on
+  the machine, network) and are not the figures above.
 
 ## Consequences
 
@@ -129,3 +146,10 @@ own item ids and its parameters in `meta/` and in the GeoTIFF tags, and is recom
   0010). A step in a time series at 2021/2022 should be checked against the baseline column in `composite_summary.csv` before
   being read as change.
 - SWM spans five months; use `window_day_median` before comparing years.
+- The 20 m bands (B8A, B11, B12) are resampled bilinearly to 10 m, so a 10 m pixel that SCL marks clear can draw weight from a
+  neighbouring 20 m pixel that SCL marks as cloud or shadow. This is an inherent edge effect on NDMI and NBR near cloud edges.
+- M1.5 and M1.6 should test for a step at the 2021/22 processing-era boundary (baseline 03.00/04.00 to 04.00/05.xx) before
+  reading any change across it as real.
+- **Open question for the owner (no change made):** `dedupe_s2` keeps the highest baseline, so a degraded higher-baseline item
+  can replace a good one (the 2023-07-06 case above). Whether to prefer, for example, the item with the larger valid share, is
+  a rule change to CLAUDE.md and ADR 0010 and is left to the owner.
