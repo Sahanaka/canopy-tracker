@@ -419,10 +419,46 @@ def baseline_era(df: pd.DataFrame) -> pd.Series:
     )
 
 
+COUNT_NODATA = 65535  # uint16 nodata for pixels outside the AOI polygon in the count rasters
+
+
+def clear_rate_by_window(
+    df: pd.DataFrame, variant: str, windows: Mapping[str, Sequence[int]]
+) -> pd.DataFrame:
+    """Return per-window mean/median clear fraction (0-1) of acquisitions with data, all years."""
+    d = df[(df["status"] == "ok") & (df["valid_frac"] > 0)]
+    rows = []
+    for name, months in windows.items():
+        v = d.loc[d["month"].isin(months), variant]
+        rows.append(
+            {
+                "window": name,
+                "months": len(months),
+                "n_acq": len(v),
+                "mean_clear": float(v.mean()),
+                "median_clear": float(v.median()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def clear_rate_by_month(df: pd.DataFrame, variant: str) -> pd.DataFrame:
+    """Return per calendar month the mean/median clear fraction (0-1) of acquisitions with data."""
+    d = df[(df["status"] == "ok") & (df["valid_frac"] > 0)]
+    g = d.groupby("month")[variant]
+    return pd.DataFrame(
+        {"n_acq": g.size(), "mean_clear": g.mean(), "median_clear": g.median()}
+    ).reindex(range(1, 13))
+
+
 def write_clear_counts(
-    path: str | Path, yms: Sequence[tuple[int, int]], counts: NDArray[np.uint16], geobox: GeoBox
+    path: str | Path,
+    yms: Sequence[tuple[int, int]],
+    counts: NDArray[np.uint16],
+    geobox: GeoBox,
+    inside: NDArray[np.bool_] | None = None,
 ) -> Path:
-    """Write per-pixel clear-observation counts (uint16, one band per year-month) to a GeoTIFF."""
+    """Write clear counts (uint16, band per year-month); pixels outside the AOI are 65535 nodata."""
     import rasterio
 
     p = Path(path)
@@ -440,9 +476,13 @@ def write_clear_counts(
         crs=str(geobox.crs),
         transform=geobox.transform,
         compress="deflate",
+        nodata=COUNT_NODATA if inside is not None else None,
     ) as dst:
         for i, (y, m) in enumerate(yms, 1):
-            dst.write(counts[i - 1], i)
+            band = counts[i - 1]
+            if inside is not None:
+                band = np.where(inside, band, np.uint16(COUNT_NODATA))
+            dst.write(band, i)
             dst.set_band_description(i, f"{y}-{m:02d}")
     return p
 
@@ -475,7 +515,10 @@ def window_summary(
     today: date | None = None,
     search_range: tuple[date, date] | None = None,
 ) -> pd.DataFrame:
-    """Return one row per window and season-year: n_ok, n_error, zero-obs share, median, partial.
+    """Return one row per window and season-year: scene counts, zero-obs share, count tail, partial.
+
+    n_ok counts ok rows; n_with_data counts those with valid_frac > 0 (no-data swaths excluded).
+    share_le1/le2_obs and p10_count describe the lower tail of the per-pixel count (AOI pixels).
 
     partial_window is True when the window is not fully inside the searched date range
     (search_range, end capped at today); without it, the first and last acquisition dates are used.
@@ -500,6 +543,11 @@ def window_summary(
                 for st, y, m in zip(df["status"], df["year"], df["month"], strict=True)
             ]
             n_ok = sum(1 for st, hit in sel if hit and st == "ok")
+            n_data = sum(
+                1
+                for (st, hit), vf in zip(sel, df["valid_frac"], strict=True)
+                if hit and st == "ok" and vf > 0
+            )
             n_err = sum(1 for st, hit in sel if hit and st == "error")
             w_start, w_end = _window_span(months, sy)
             partial = bool(first is None or w_start < first or w_end > last)
@@ -508,9 +556,13 @@ def window_summary(
                     "window": name,
                     "season_year": sy,
                     "n_ok": n_ok,
+                    "n_with_data": n_data,
                     "n_error": n_err,
                     "share_zero_obs": float((tot == 0).mean()),
                     "share_ge1_obs": float((tot >= 1).mean()),
+                    "share_le1_obs": float((tot <= 1).mean()),
+                    "share_le2_obs": float((tot <= 2).mean()),
+                    "p10_count": float(np.percentile(tot, 10)),
                     "median_count": float(np.median(tot)),
                     "partial_window": partial,
                 }

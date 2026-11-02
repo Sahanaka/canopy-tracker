@@ -229,6 +229,7 @@ def test_window_summary() -> None:
             "month": [1, 12, 1, 6, 2],
             "date_local": ["2019-01-05", "2020-12-05", "2021-01-05", "2021-06-05", "2021-02-10"],
             "status": ["ok", "ok", "ok", "ok", "error"],
+            "valid_frac": [1.0, 1.0, 0.0, 1.0, 1.0],  # the Jan 2021 acquisition has no data
         }
     )
     out = window_summary(
@@ -243,6 +244,10 @@ def test_window_summary() -> None:
     assert out["season_year"].tolist() == [2019, 2020, 2021, 2022]  # every year in the span
     r = out.set_index("season_year")
     assert r.loc[2021, "n_ok"] == 2 and r.loc[2021, "n_error"] == 1
+    assert r.loc[2021, "n_with_data"] == 0 and r.loc[2020, "n_with_data"] == 1
+    assert r.loc[2021, "share_le1_obs"] == pytest.approx(0.75)  # counts [1,2,0,0]
+    assert r.loc[2021, "share_le2_obs"] == 1.0
+    assert r.loc[2021, "p10_count"] == pytest.approx(0.0)
     assert r.loc[2021, "share_zero_obs"] == pytest.approx(0.5)
     assert r.loc[2021, "share_ge1_obs"] == pytest.approx(0.5)
     assert r.loc[2021, "median_count"] == pytest.approx(0.5)
@@ -343,6 +348,7 @@ def test_window_summary_search_range_makes_partial_exact() -> None:
             "year": [2023],
             "month": [6],
             "date_local": ["2023-06-10"],
+            "valid_frac": [1.0],
         }
     )
     inside = np.ones((2, 2), dtype=bool)
@@ -387,3 +393,34 @@ def test_write_clear_counts_bands(aoi, tmp_path) -> None:
         assert src.crs.to_epsg() == 32644
         np.testing.assert_array_equal(src.read(2), arr[1])
         assert src.transform.almost_equals(gb.transform)
+
+
+def test_clear_rate_tables() -> None:
+    df = pd.DataFrame(
+        {
+            "status": ["ok", "ok", "ok", "error"],
+            "month": [3, 3, 6, 3],
+            "valid_frac": [1.0, 0.0, 1.0, 1.0],
+            "clear_base": [0.5, 0.0, 0.2, 0.9],
+        }
+    )
+    w = inventory.clear_rate_by_window(df, "clear_base", {"A": (3, 4), "B": (5, 6, 7)})
+    assert w["n_acq"].tolist() == [1, 1]  # the no-data and error rows are excluded
+    assert w["mean_clear"].tolist() == pytest.approx([0.5, 0.2])
+    m = inventory.clear_rate_by_month(df, "clear_base")
+    assert len(m) == 12 and m.loc[3, "n_acq"] == 1 and np.isnan(m.loc[1, "mean_clear"])
+
+
+def test_write_clear_counts_outside_aoi_is_nodata(aoi, tmp_path) -> None:
+    import rasterio
+
+    from highland.stac import aoi_geobox
+
+    gb = aoi_geobox(aoi, [_s2_item(3)], "s2")
+    inside = aoi_inside_mask(aoi, gb)
+    arr = np.ones((1, *gb.shape), dtype=np.uint16)
+    p = inventory.write_clear_counts(tmp_path / "c.tif", [(2023, 3)], arr, gb, inside)
+    with rasterio.open(p) as src:
+        assert src.nodata == inventory.COUNT_NODATA
+        m = src.read(1, masked=True)
+        assert m.mask.sum() == (~inside).sum() and m.sum() == inside.sum()
