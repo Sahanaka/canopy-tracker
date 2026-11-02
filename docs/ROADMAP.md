@@ -20,7 +20,7 @@ Tasks marked **[human]** need the owner (field work, drawing, decisions); agents
 
 ## Milestone 1 — Find opened pine stands (Module A)
 
-- [ ] **M1.1 Data availability audit** — `notebooks/01_availability.ipynb`
+- [x] **M1.1 Data availability audit** — `notebooks/01_availability.ipynb`
   - STAC search over the AOI for `sentinel-2-l2a` (full archive, mid-2015→now) and `landsat-c2-l2` (full archive, 1982→now).
   - Deduplicate reprocessed Sentinel-2 items (same datetime + MGRS tile, keep the highest baseline); report counts by platform and baseline.
   - Per scene: share of AOI pixels clear after masking (SCL / QA_PIXEL), not just scene-level cloud %.

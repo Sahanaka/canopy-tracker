@@ -1,6 +1,6 @@
 # 0011 — Proposed composite windows and first Landsat year
 
-- **Status:** proposed — awaiting owner acceptance
+- **Status:** accepted by the owner on 2026-11-02 (see Owner decision below)
 - **Date:** 2026-11-02 (revised after science review loop 1)
 - **Task:** M1.1
 
@@ -14,7 +14,18 @@ number of acquisitions with data. This ADR presents those tables, states the rul
 assumption, and proposes windows and a year. Nothing here is accepted until the owner says so, and M1.1 stays unticked
 until then.
 
-## Decision (proposed)
+## Owner decision (2026-11-02)
+
+- **Sentinel-2 composite windows for M1.2:** all four Met Department seasons — FIM (Mar–Apr), SWM (May–Sep),
+  SIM (Oct–Nov) and NEM (Dec–Feb, December counted in the following year). The thin season-years listed below
+  (SIM in most years; FIM and NEM 2016; FIM 2017) are kept but must be flagged in M1.2 outputs, because a median
+  over 1–2 clear observations cannot reject undetected cloud.
+- **First Landsat year for M1.5: 2000** (not 1999, which rests on a single scene). The gap-tolerant option using
+  1994–1997 is not adopted now; revisit it if the start-of-period forest mask (M1.4/M1.6) needs earlier years.
+
+The proposal text below is kept as the record of how these were derived.
+
+## Decision (as proposed)
 
 ### Assumptions (the rule)
 
