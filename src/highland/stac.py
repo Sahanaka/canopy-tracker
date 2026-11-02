@@ -82,6 +82,9 @@ def s2_processing_time(item: pystac.Item) -> str:
     """Return the processing time (YYYYMMDDTHHMMSS, UTC) from the last field of a S2 item id."""
     last = item.id.split("_")[-1]
     if len(last) != 15 or last[8] != "T":
+        gen = item.properties.get("s2:generation_time")
+        if gen:  # fall back to the STAC property when the id suffix cannot be parsed
+            return datetime.fromisoformat(str(gen).replace("Z", "+00:00")).strftime("%Y%m%dT%H%M%S")
         raise ValueError(f"Item id {item.id!r} does not end in a YYYYMMDDTHHMMSS processing time.")
     return last
 
@@ -193,6 +196,12 @@ def aoi_geobox(aoi: gpd.GeoDataFrame, items: Sequence[pystac.Item], sensor: str)
     res = NATIVE_RESOLUTION_M[sensor]
     grids = [native_grid(i, asset) for i in items]
     crs0, t0 = grids[0]
+    if abs(t0.a) != res or abs(t0.e) != res:
+        raise ValueError(
+            f"{sensor}: first item's {asset} grid is {abs(t0.a)} x {abs(t0.e)} m, "
+            f"expected {res} m; "
+            "refusing to resample silently."
+        )
     if crs0 != WORK_CRS:
         log.warning("First item CRS is %s, not %s; reads will resample (nearest).", crs0, WORK_CRS)
     offsets = {(round(t.c % res, 6), round(t.f % res, 6)) for _, t in grids}

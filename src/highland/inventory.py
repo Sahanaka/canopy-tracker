@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import time
 from collections.abc import Callable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import geopandas as gpd
@@ -36,6 +37,7 @@ from highland.stac import (
 
 log = logging.getLogger(__name__)
 
+CACHE_SCHEMA_VERSION = 2  # bump when the cached row or mask layout changes
 SLC_OFF_START = datetime(2003, 5, 31, tzinfo=UTC)  # Landsat 7 scan-line corrector failure
 S2_VARIANTS: tuple[str, ...] = ("clear_base", "clear_keep2", "clear_keep7", "clear_keep27")
 LANDSAT_VARIANTS: tuple[str, ...] = ("clear", "clear_nocirrus")
@@ -53,9 +55,12 @@ _ID_COLS = [
     "item_ids",
     "tiles",
     "baselines",
+    "baseline_min",
     "baseline_max",
+    "mixed_baseline",
     "collection_category",
     "correction",
+    "mixed_tier",
     "relative_orbit",
     "eo_cloud_cover_mean",
     "sun_azimuth_deg",
@@ -80,7 +85,10 @@ def aoi_inside_mask(aoi: gpd.GeoDataFrame, geobox: GeoBox) -> NDArray[np.bool_]:
 
 
 def read_layer(items: Sequence[pystac.Item], sensor: str, geobox: GeoBox) -> NDArray[np.integer]:
-    """Read SCL (uint8, nodata 0) or QA_PIXEL (uint16, nodata 1) of one acquisition."""
+    """Read SCL (uint8, nodata 0) or QA_PIXEL (uint16, nodata 1) of one acquisition.
+
+    Where tiles or rows overlap, the first valid (non-nodata) pixel in item order wins.
+    """
     import odc.stac
     import planetary_computer
 
@@ -110,6 +118,15 @@ def _mean(items: Sequence[pystac.Item], fn: Callable[[pystac.Item], float | None
     return float(np.mean(vals)) if vals else float("nan")
 
 
+def _unique(items: Sequence[pystac.Item], prop: str) -> list[str]:
+    return sorted({str(i.properties[prop]) for i in items if i.properties.get(prop) is not None})
+
+
+def _joined(items: Sequence[pystac.Item], prop: str) -> str | None:
+    vals = _unique(items, prop)
+    return "+".join(vals) if vals else None
+
+
 def _meta_row(sensor: str, key: str, items: Sequence[pystac.Item]) -> dict[str, object]:
     first = items[0]
     dts = sorted(i.datetime for i in items if i.datetime is not None)
@@ -122,6 +139,7 @@ def _meta_row(sensor: str, key: str, items: Sequence[pystac.Item]) -> dict[str, 
         zen = _mean(items, lambda i: i.properties.get("s2:mean_solar_zenith"))
         elev = 90.0 - zen
         bl_max = max(bls, key=parse_baseline)
+        bl_min = min(bls, key=parse_baseline)
     else:
         bls = []
         tiles = [
@@ -130,7 +148,7 @@ def _meta_row(sensor: str, key: str, items: Sequence[pystac.Item]) -> dict[str, 
         ]
         az = _mean(items, lambda i: i.properties.get("view:sun_azimuth"))
         elev = _mean(items, lambda i: i.properties.get("view:sun_elevation"))
-        bl_max = None
+        bl_max = bl_min = None
     local = local_date(dt)
     platform = str(p["platform"]).lower()
     return {
@@ -144,10 +162,15 @@ def _meta_row(sensor: str, key: str, items: Sequence[pystac.Item]) -> dict[str, 
         "item_ids": [i.id for i in items],
         "tiles": tiles,
         "baselines": bls,
+        "baseline_min": bl_min,
         "baseline_max": bl_max,
-        "collection_category": p.get("landsat:collection_category"),
-        "correction": p.get("landsat:correction"),
-        "relative_orbit": p.get("sat:relative_orbit"),
+        "mixed_baseline": bool(
+            bl_min is not None and parse_baseline(bl_min) != parse_baseline(bl_max)
+        ),
+        "collection_category": _joined(items, "landsat:collection_category"),
+        "correction": _joined(items, "landsat:correction"),
+        "mixed_tier": len(_unique(items, "landsat:collection_category")) > 1,
+        "relative_orbit": _joined(items, "sat:relative_orbit"),
         "eo_cloud_cover_mean": _mean(items, lambda i: i.properties.get("eo:cloud_cover")),
         "sun_azimuth_deg": az,
         "sun_elevation_deg": elev,
@@ -165,7 +188,11 @@ def audit_acquisition(
     inside: NDArray[np.bool_],
     reader: Callable[..., NDArray[np.integer]] | None = None,
 ) -> tuple[dict[str, object], dict[str, NDArray[np.bool_]]]:
-    """Return one inventory row (shares 0-1 of AOI pixels) and per-pixel clear masks by variant."""
+    """Return one inventory row (shares 0-1 of AOI pixels) and per-pixel clear masks by variant.
+
+    The 12 SCL shares are mutually exclusive and sum to 1. The Landsat qa_*_share flags overlap
+    (a pixel can be cloud and dilated and shadow), so they must not be summed.
+    """
     reader = reader or read_layer
     row = _meta_row(sensor, key, items)
     layer = reader(items, sensor, geobox)
@@ -205,7 +232,27 @@ def _cache_path(cache_dir: Path, sensor: str, key: str) -> Path:
     return cache_dir / sensor / f"{key}.npz"
 
 
-def _write_cache(path: Path, row: Mapping[str, object], clears: Mapping[str, NDArray]) -> None:
+def aoi_hash(aoi: gpd.GeoDataFrame) -> str:
+    """Return the sha256 hex digest of the AOI polygon's WKB in EPSG:32644."""
+    return hashlib.sha256(aoi.to_crs(WORK_CRS).geometry.iloc[0].wkb).hexdigest()
+
+
+def cache_meta(items: Sequence[pystac.Item], geobox: GeoBox, aoi_sha: str) -> dict[str, object]:
+    """Return the identity of a cached acquisition: schema, sorted item ids, grid and AOI hash."""
+    t = geobox.transform
+    return {
+        "schema": CACHE_SCHEMA_VERSION,
+        "item_ids": sorted(i.id for i in items),
+        "shape": [int(v) for v in geobox.shape],
+        "transform": [float(t.a), float(t.b), float(t.c), float(t.d), float(t.e), float(t.f)],
+        "crs": str(geobox.crs),
+        "aoi_sha256": aoi_sha,
+    }
+
+
+def _write_cache(
+    path: Path, row: Mapping[str, object], clears: Mapping[str, NDArray], meta: Mapping[str, object]
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     shape = next(iter(clears.values())).shape
     payload = {k: np.packbits(v.ravel()) for k, v in clears.items()}
@@ -213,13 +260,22 @@ def _write_cache(path: Path, row: Mapping[str, object], clears: Mapping[str, NDA
         row, default=lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o)
     )
     tmp = path.with_suffix(".tmp.npz")
-    np.savez_compressed(tmp, _row=np.array(row_json), _shape=np.array(shape), **payload)
+    np.savez_compressed(
+        tmp,
+        _row=np.array(row_json),
+        _shape=np.array(shape),
+        _meta=np.array(json.dumps(meta)),
+        **payload,
+    )
     os.replace(tmp, path)  # atomic: a half-written file is never seen as done
 
 
-def _read_cache(path: Path) -> tuple[dict[str, object], dict[str, NDArray[np.bool_]]]:
+def _read_cache(
+    path: Path,
+) -> tuple[dict[str, object], dict[str, NDArray[np.bool_]], dict[str, object]]:
     with np.load(path) as z:
         row = json.loads(str(z["_row"]))
+        meta = json.loads(str(z["_meta"])) if "_meta" in z.files else {}
         shape = tuple(int(s) for s in z["_shape"])
         n = int(np.prod(shape))
         clears = {
@@ -228,7 +284,7 @@ def _read_cache(path: Path) -> tuple[dict[str, object], dict[str, NDArray[np.boo
             if not k.startswith("_")
         }
     row["datetime_utc"] = pd.Timestamp(row["datetime_utc"])
-    return row, clears
+    return row, clears, meta
 
 
 def run_audit(
@@ -253,17 +309,28 @@ def run_audit(
     geobox = aoi_geobox(aoi, items, sensor)
     inside = aoi_inside_mask(aoi, geobox)
     groups = acquisition_groups(items, sensor)
+    aoi_sha = aoi_hash(aoi)
     rows: list[dict[str, object]] = []
     for n, (key, members) in enumerate(groups.items(), 1):
         path = _cache_path(cache_dir, sensor, key)
+        meta = cache_meta(members, geobox, aoi_sha)
         if resume and path.exists():
-            rows.append(_read_cache(path)[0])
-            continue
+            try:
+                cached_row, _, cached_meta = _read_cache(path)
+            except Exception as exc:  # noqa: BLE001 - unreadable cache file is a miss
+                log.info("%s: cache unreadable (%s); recomputing", key, exc)
+            else:
+                if cached_meta == meta:
+                    rows.append(cached_row)
+                    continue
+                log.info(
+                    "%s: cache is stale (items, grid, AOI or schema changed); recomputing", key
+                )
         err: Exception | None = None
         for attempt in range(retries):
             try:
                 row, clears = audit_acquisition(members, sensor, key, geobox, inside, reader)
-                _write_cache(path, row, clears)
+                _write_cache(path, row, clears, meta)
                 rows.append(row)
                 err = None
                 break
@@ -294,16 +361,23 @@ def write_inventory(df: pd.DataFrame, path: str | Path) -> Path:
 
 
 def clear_counts(
-    out_dir: str | Path, sensor: str, df: pd.DataFrame
+    out_dir: str | Path, sensor: str, df: pd.DataFrame, geobox: GeoBox
 ) -> tuple[list[tuple[int, int]], dict[str, NDArray[np.uint16]]]:
-    """Return sorted (year, month) keys and per-pixel counts of clear observations per variant."""
+    """Return sorted (year, month) keys and per-pixel clear-observation counts per variant."""
+    want = cache_meta([], geobox, "")
     cache_dir = Path(out_dir) / "cache"
     ok = df[df["status"] == "ok"]
     yms = sorted({(int(y), int(m)) for y, m in zip(ok["year"], ok["month"], strict=True)})
     idx = {ym: i for i, ym in enumerate(yms)}
     counts: dict[str, NDArray[np.uint16]] = {}
     for key, y, m in zip(ok["acq_id"], ok["year"], ok["month"], strict=True):
-        _, clears = _read_cache(_cache_path(cache_dir, sensor, key))
+        _, clears, meta = _read_cache(_cache_path(cache_dir, sensor, key))
+        for k in ("shape", "transform", "crs"):
+            if meta.get(k) != want[k]:
+                raise ValueError(
+                    f"{key}: cached {k} {meta.get(k)} differs from target {want[k]}; "
+                    "rerun run_audit (stale cache) before counting."
+                )
         for name, mask in clears.items():
             if name not in counts:
                 counts[name] = np.zeros((len(yms), *mask.shape), dtype=np.uint16)
@@ -322,15 +396,21 @@ def month_year_table(df: pd.DataFrame, value: str, agg: str = "sum") -> pd.DataF
 
 
 def season_year(year: int, month: int, months: Sequence[int]) -> int | None:
-    """Return the season year of a month for a window (chronological months), or None if outside.
-
-    A window that wraps the new year (first month > last month, e.g. 12, 1, 2) assigns the
-    months from the first month onward to the following year.
-    """
+    """Return the season year of a month for a window of chronological months, else None."""
+    # A window that wraps the new year (first month > last month, e.g. 12, 1, 2) assigns its
+    # months from the first month onward to the following year.
     if month not in months:
         return None
     wraps = months[0] > months[-1]
     return year + 1 if wraps and month >= months[0] else year
+
+
+def _window_span(months: Sequence[int], sy: int) -> tuple[date, date]:
+    wraps = months[0] > months[-1]
+    start = date(sy - 1 if wraps else sy, months[0], 1)
+    last = months[-1]
+    end = date(sy + (last == 12), last % 12 + 1, 1) - timedelta(days=1)
+    return start, end
 
 
 def window_summary(
@@ -339,31 +419,41 @@ def window_summary(
     counts: NDArray[np.uint16],
     inside: NDArray[np.bool_],
     windows: Mapping[str, Sequence[int]],
+    years: Sequence[int],
+    today: date | None = None,
 ) -> pd.DataFrame:
-    """Return per window and season-year: acquisitions, AOI share with 0 clear obs, median count."""
-    ok = df[df["status"] == "ok"]
+    """Return one row per window and season-year: n_ok, n_error, zero-obs share, median, partial."""
+    today = today or date.today()
+    first = last = None
+    if len(df):
+        d = pd.to_datetime(df["date_local"]).dt.date
+        first, last = d.min(), min(d.max(), today)
     out: list[dict[str, object]] = []
     for name, months in windows.items():
-        by_year: dict[int, list[int]] = {}
-        for i, (y, m) in enumerate(yms):
-            sy = season_year(y, m, months)
-            if sy is not None:
-                by_year.setdefault(sy, []).append(i)
-        for sy, idxs in sorted(by_year.items()):
-            tot = counts[idxs].sum(axis=0, dtype=np.int64)[inside]
-            n_acq = sum(
-                1
-                for y, m in zip(ok["year"], ok["month"], strict=True)
-                if season_year(int(y), int(m), months) == sy
-            )
+        for sy in years:
+            idxs = [i for i, (y, m) in enumerate(yms) if season_year(y, m, months) == sy]
+            if idxs:
+                tot = counts[idxs].sum(axis=0, dtype=np.int64)[inside]
+            else:
+                tot = np.zeros(int(inside.sum()), dtype=np.int64)
+            sel = [
+                (st, season_year(int(y), int(m), months) == sy)
+                for st, y, m in zip(df["status"], df["year"], df["month"], strict=True)
+            ]
+            n_ok = sum(1 for st, hit in sel if hit and st == "ok")
+            n_err = sum(1 for st, hit in sel if hit and st == "error")
+            w_start, w_end = _window_span(months, sy)
+            partial = bool(first is None or w_start < first or w_end > last)
             out.append(
                 {
                     "window": name,
                     "season_year": sy,
-                    "n_acquisitions": n_acq,
+                    "n_ok": n_ok,
+                    "n_error": n_err,
                     "share_zero_obs": float((tot == 0).mean()),
                     "share_ge1_obs": float((tot >= 1).mean()),
                     "median_count": float(np.median(tot)),
+                    "partial_window": partial,
                 }
             )
     return pd.DataFrame(out)

@@ -170,3 +170,17 @@ def test_aoi_geobox_needs_items() -> None:
     aoi = gpd.GeoDataFrame(geometry=[box(80.9, 6.8, 80.99, 6.89)], crs="EPSG:4326")
     with pytest.raises(ValueError):
         aoi_geobox(aoi, [], "s2")
+
+
+def test_aoi_geobox_rejects_wrong_resolution() -> None:
+    aoi = gpd.GeoDataFrame(geometry=[box(500010.0, 700010.0, 500100.0, 700100.0)], crs="EPSG:32644")
+    it = _grid_item(499980.0, 701000.0, "SCL", 10.0)  # 10 m SCL is not what s2 expects (20 m)
+    with pytest.raises(ValueError, match="refusing to resample"):
+        aoi_geobox(aoi.to_crs("EPSG:4326"), [it], "s2")
+
+
+def test_processing_time_falls_back_to_generation_time() -> None:
+    it = _s2()
+    it.id = "weird_id"
+    it.properties["s2:generation_time"] = "2024-08-05T21:56:17.000000Z"
+    assert s2_processing_time(it) == "20240805T215617"

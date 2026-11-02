@@ -1,6 +1,6 @@
 """Unit tests for highland.inventory with a monkeypatched reader (no network)."""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import geopandas as gpd
 import numpy as np
@@ -143,7 +143,10 @@ def test_run_audit_s2_rows_resume_and_roundtrip(aoi, tmp_path) -> None:
     assert back["clear_base"].tolist() == pytest.approx(df["clear_base"].tolist())
     assert list(back["item_ids"].iloc[1]) == df["item_ids"].iloc[1]
     # counts
-    yms, counts = clear_counts(tmp_path, "s2", df)
+    from highland.stac import aoi_geobox
+
+    gb = aoi_geobox(aoi, items, "s2")
+    yms, counts = clear_counts(tmp_path, "s2", df, gb)
     assert yms == [(2023, 3)]
     assert set(counts) == set(inventory.S2_VARIANTS)
     assert counts["clear_base"].dtype == np.uint16
@@ -221,14 +224,99 @@ def test_window_summary() -> None:
     counts[1, 0, 1] = 2  # Jan 2021
     counts[2, :, :] = 5  # June, outside the window
     df = pd.DataFrame(
-        {"year": [2020, 2021, 2021], "month": [12, 1, 6], "status": ["ok", "ok", "ok"]}
+        {
+            "year": [2019, 2020, 2021, 2021, 2021],
+            "month": [1, 12, 1, 6, 2],
+            "date_local": ["2019-01-05", "2020-12-05", "2021-01-05", "2021-06-05", "2021-02-10"],
+            "status": ["ok", "ok", "ok", "ok", "error"],
+        }
     )
-    out = window_summary(df, yms, counts, inside, {"ne": (12, 1, 2)})
-    assert len(out) == 1
-    r = out.iloc[0]
-    assert r["season_year"] == 2021 and r["n_acquisitions"] == 2
-    assert r["share_zero_obs"] == pytest.approx(0.5) and r["share_ge1_obs"] == pytest.approx(0.5)
-    assert r["median_count"] == pytest.approx(0.5)
+    out = window_summary(
+        df,
+        yms,
+        counts,
+        inside,
+        {"ne": (12, 1, 2)},
+        years=[2019, 2020, 2021, 2022],
+        today=date(2022, 1, 15),
+    )
+    assert out["season_year"].tolist() == [2019, 2020, 2021, 2022]  # every year in the span
+    r = out.set_index("season_year")
+    assert r.loc[2021, "n_ok"] == 2 and r.loc[2021, "n_error"] == 1
+    assert r.loc[2021, "share_zero_obs"] == pytest.approx(0.5)
+    assert r.loc[2021, "share_ge1_obs"] == pytest.approx(0.5)
+    assert r.loc[2021, "median_count"] == pytest.approx(0.5)
+    # a season-year with no ok acquisitions is reported, not omitted
+    assert r.loc[2020, "n_ok"] == 0 and r.loc[2020, "share_zero_obs"] == 1.0
+    assert r.loc[2020, "median_count"] == 0.0
+    # partial: first data 2019-01-05 is inside Dec 2018-Feb 2019 only partly; 2022 ends after today
+    assert r.loc[2019, "partial_window"] and r.loc[2022, "partial_window"]
+    assert not r.loc[2020, "partial_window"] and not r.loc[2021, "partial_window"]
+
+
+def test_mixed_tier_and_baseline_metadata(aoi, tmp_path) -> None:
+    a, b = _ls_item("landsat-8", 19), _ls_item("landsat-8", 19)
+    b.id += "_b"
+    b.properties["landsat:collection_category"] = "T2"
+    df = run_audit(
+        "landsat", [a, b], aoi, tmp_path, reader=lambda i, s, g: np.zeros(tuple(g.shape), np.uint16)
+    )
+    r = df.iloc[0]
+    assert len(df) == 1 and r["collection_category"] == "T1+T2" and r["mixed_tier"]
+    single = run_audit(
+        "landsat",
+        [_ls_item("landsat-9", 27)],
+        aoi,
+        tmp_path / "x",
+        reader=lambda i, s, g: np.zeros(tuple(g.shape), np.uint16),
+    )
+    assert single.iloc[0]["collection_category"] == "T1" and not single.iloc[0]["mixed_tier"]
+    s2a, s2b = _s2_item(8), _s2_item(8, tile="44NNN")
+    s2b.properties["s2:processing_baseline"] = "04.00"
+    d2 = run_audit("s2", [s2a, s2b], aoi, tmp_path / "s", reader=_s2_reader([]))
+    r2 = d2.iloc[0]
+    assert (r2["baseline_min"], r2["baseline_max"], r2["mixed_baseline"]) == (
+        "04.00",
+        "05.10",
+        True,
+    )
+    d3 = run_audit("s2", [s2a], aoi, tmp_path / "s3", reader=_s2_reader([]))
+    assert not d3.iloc[0]["mixed_baseline"] and d3.iloc[0]["baseline_min"] == "05.10"
+
+
+def test_cache_hit_and_misses(aoi, tmp_path, monkeypatch) -> None:
+    items = [_s2_item(3)]
+    calls: list[str] = []
+    run_audit("s2", items, aoi, tmp_path, reader=_s2_reader(calls))
+    run_audit("s2", items, aoi, tmp_path, reader=_s2_reader(calls))
+    assert len(calls) == 1  # unchanged: hit
+    # changed item ids (a reprocessed item replaces the old one) -> miss
+    new = _s2_item(3)
+    new.id = new.id.replace("20240805T215617", "20250101T000000")
+    run_audit("s2", [new], aoi, tmp_path, reader=_s2_reader(calls))
+    assert len(calls) == 2
+    # changed AOI -> miss
+    aoi2 = gpd.GeoDataFrame(
+        geometry=[box(500000.0, 700000.0, 500380.0, 700400.0)], crs="EPSG:32644"
+    )
+    run_audit("s2", [new], aoi2.to_crs("EPSG:4326"), tmp_path, reader=_s2_reader(calls))
+    assert len(calls) == 3
+    # changed schema version -> miss
+    monkeypatch.setattr(inventory, "CACHE_SCHEMA_VERSION", inventory.CACHE_SCHEMA_VERSION + 1)
+    run_audit("s2", [new], aoi2.to_crs("EPSG:4326"), tmp_path, reader=_s2_reader(calls))
+    assert len(calls) == 4
+
+
+def test_clear_counts_refuses_other_geobox(aoi, tmp_path) -> None:
+    from highland.stac import aoi_geobox
+
+    items = [_s2_item(3)]
+    df = run_audit("s2", items, aoi, tmp_path, reader=_s2_reader([]))
+    gb = aoi_geobox(aoi, items, "s2")
+    clear_counts(tmp_path, "s2", df, gb)  # matching grid works
+    other = gb.translate_pix(1, 0)
+    with pytest.raises(ValueError, match="differs from target"):
+        clear_counts(tmp_path, "s2", df, other)
 
 
 def test_run_audit_no_items(aoi, tmp_path) -> None:
