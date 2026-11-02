@@ -1,0 +1,40 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Bandarawela-Haputale AOI",
+    "candidate": "E-30_N+15",
+    "source": "docs/decisions/0009-aoi-selection.md"
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       80.9926245,
+       6.7676571
+      ],
+      [
+       80.9926231,
+       6.8581175
+      ],
+      [
+       80.9021124,
+       6.8581076
+      ],
+      [
+       80.9021307,
+       6.7676473
+      ],
+      [
+       80.9926245,
+       6.7676571
+      ]
+     ]
+    ]
+   }
+  }
+ ]
+}
