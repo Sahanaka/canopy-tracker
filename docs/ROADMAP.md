@@ -27,7 +27,7 @@ Tasks marked **[human]** need the owner (field work, drawing, decisions); agents
   - Report the share of AOI pixels removed by SCL class 2 (cast shadow) and class 7 (unclassified) separately.
   - Plots: clear-pixel % by month × year for each sensor. Writes `outputs/M1.1/scene_inventory.parquet`.
   - ADR proposing composite windows (seasons) based on the plot, and the first year the Landsat record supports for M1.5.
-- [x] **M1.2 Sentinel-2 seasonal composites + indices** — `notebooks/02_s2_composites.ipynb`
+- [ ] **M1.2 Sentinel-2 seasonal composites + indices** — `notebooks/02_s2_composites.ipynb`
   - Baseline-04.00 offset handled; SCL mask; median composites per window from the M1.1 ADR.
   - NDVI, EVI, NDMI, NBR per composite; GeoTIFFs (EPSG:32644, 10 m) in `outputs/M1.2/`.
   - Unit tests for offset correction, masking and each index on synthetic arrays.
