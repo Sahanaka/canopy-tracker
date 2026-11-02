@@ -52,7 +52,8 @@ src/highland/        # all real logic lives here (importable, tested)
   change.py          # disturbance detection
   terrain.py         # DEM derivatives, terrain-shadow flag
   landcover.py       # WorldCover mask
-  io.py              # GeoTIFF / GeoJSON export
+  io.py              # GeoTIFF / GeoJSON export, field-point loader
+  inventory.py       # per-acquisition scene inventory / availability audit
   viz3d.py           # PyVista drape of rasters over the DEM (notebook QA views)
   viewer.py          # builds viewer/data/ from outputs/ for the web viewer
 viewer/              # static 3D web viewer (index.html, app.js, style.css, data/) → GitHub Pages
