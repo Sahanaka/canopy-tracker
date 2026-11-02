@@ -5,8 +5,10 @@ import pytest
 
 from highland.masking import (
     SCL_CLASSES,
+    SCL_KEEP_M12,
     qa_clear,
     qa_flags,
+    s2_dn_to_reflectance,
     scl_class_shares,
     scl_clear,
 )
@@ -106,3 +108,46 @@ def test_qa_errors() -> None:
         qa_flags(np.zeros(2, np.uint16), "sentinel-2a")
     with pytest.raises(TypeError):
         qa_flags(np.zeros(2, np.float32), "landsat-8")
+
+
+# --- Sentinel-2 DN to reflectance (M1.2) ---------------------------------------------------------
+_DN = np.array([0, 1, 999, 1000, 1500, 65535], dtype=np.uint16)
+
+
+def test_offset_pre_04_00_is_plain_scaling() -> None:
+    out = s2_dn_to_reflectance(_DN, "03.00")
+    assert out.dtype == np.float32
+    assert np.isnan(out[0])
+    np.testing.assert_allclose(out[1:], _DN[1:] / 10000.0, rtol=1e-6)
+
+
+@pytest.mark.parametrize("bl", ["04.00", "4.0", "05.10", "05.13"])
+def test_offset_from_04_00_subtracts_1000_without_wrapping(bl: str) -> None:
+    out = s2_dn_to_reflectance(_DN, bl)
+    assert out.dtype == np.float32
+    assert np.isnan(out[0])  # DN 0 is no-data
+    assert out[1] == pytest.approx(-0.0999, abs=1e-6)  # DN 1 -> small negative, kept
+    assert out[2] == pytest.approx(-0.0001, abs=1e-7)  # DN 999 -> negative, not wrapped to ~6.5
+    assert out[3] == 0.0
+    assert out[4] == pytest.approx(0.05)
+    assert out[5] == pytest.approx(6.4535, abs=1e-4)
+
+
+def test_offset_decided_by_baseline_not_date() -> None:
+    # A 2016 scene reprocessed to baseline 05.xx carries the offset; only the baseline matters.
+    assert s2_dn_to_reflectance(np.array([1500], np.uint16), "05.10")[0] == pytest.approx(0.05)
+    assert s2_dn_to_reflectance(np.array([1500], np.uint16), "02.12")[0] == pytest.approx(0.15)
+
+
+def test_offset_rejects_float_dn() -> None:
+    with pytest.raises(TypeError):
+        s2_dn_to_reflectance(np.array([1000.0]), "05.10")
+
+
+def test_keep_m12_is_keep2() -> None:
+    assert set(SCL_KEEP_M12) == {2, 4, 5, 6}
+    scl = np.arange(12, dtype=np.uint8)
+    assert list(np.flatnonzero(scl_clear(scl, keep_cast_shadow=True))) == [2, 4, 5, 6]
+    assert list(np.flatnonzero(scl_clear(scl))) == [4, 5, 6]
+    assert list(np.flatnonzero(scl_clear(scl, True, True))) == [2, 4, 5, 6, 7]
+    assert list(np.flatnonzero(scl_clear(scl, False, True))) == [4, 5, 6, 7]

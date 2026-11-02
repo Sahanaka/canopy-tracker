@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
+from highland.stac import parse_baseline
+
 # Sentinel-2 L2A Scene Classification Layer (SCL) classes, as listed in CLAUDE.md.
 SCL_CLASSES: dict[int, str] = {
     0: "no_data",
@@ -22,6 +24,15 @@ SCL_CLASSES: dict[int, str] = {
 }
 # Always kept as clear. Classes 2 and 7 are configurable (decided in the M1.2 ADR).
 SCL_KEEP_BASE: frozenset[int] = frozenset({4, 5, 6})
+# M1.2 keep-set (ADR 0012): class 2 (cast shadow) kept, class 7 (unclassified) masked.
+M12_KEEP_CAST_SHADOW = True
+M12_KEEP_UNCLASSIFIED = False
+SCL_KEEP_M12: frozenset[int] = SCL_KEEP_BASE | {2}
+
+# Sentinel-2 L2A reflectance = (DN + BOA_ADD_OFFSET) / QUANTIFICATION_VALUE for baseline >= 04.00.
+S2_BOA_ADD_OFFSET = -1000.0
+S2_QUANTIFICATION = 10000.0
+S2_OFFSET_BASELINE = (4, 0)
 
 # Landsat Collection 2 QA_PIXEL bit positions (USGS LSDS-1618 v4.0 for L4-7, LSDS-1619 v6 for L8-9).
 # Bit 6 ("clear") is deliberately never used: it is unreliable for L4-7 (LSDS-1618 5.2.1).
@@ -58,6 +69,19 @@ def scl_clear(
     if keep_unclassified:
         keep.add(7)
     return np.isin(np.asarray(scl), sorted(keep))
+
+
+def s2_dn_to_reflectance(dn: NDArray[np.integer], baseline: str) -> NDArray[np.float32]:
+    """Convert S2 L2A uint16 DN to float32 reflectance (0-1); DN 0 -> NaN, negatives kept."""
+    arr = np.asarray(dn)
+    if arr.dtype.kind not in "ui":
+        raise TypeError(f"DN must be an integer array, got {arr.dtype}")
+    # Cast to float32 BEFORE subtracting: uint16 - 1000 would wrap around under NumPy 2 (NEP 50).
+    x = arr.astype(np.float32)
+    offset = S2_BOA_ADD_OFFSET if parse_baseline(baseline) >= S2_OFFSET_BASELINE else 0.0
+    out = ((x + np.float32(offset)) / np.float32(S2_QUANTIFICATION)).astype(np.float32)
+    out[arr == 0] = np.nan
+    return out
 
 
 def _bits_for(platform: str) -> dict[str, int]:
