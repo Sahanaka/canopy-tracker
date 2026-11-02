@@ -203,7 +203,7 @@ def _summarise(
         "season": season,
         "season_year": sy,
         "n_scenes": len(scenes),
-        "n_scenes_with_data": sum(1 for s in scenes if float(s["scl_share_0"]) < 1.0),  # type: ignore[arg-type]
+        "n_scenes_with_clear": sum(1 for s in scenes if float(s["clear_fraction"]) > 0.0),  # type: ignore[arg-type]
         "baselines": ",".join(sorted({str(s["baseline"]) for s in scenes})),
         "n_obs_median": float(np.median(n)),
         "n_obs_p10": float(np.percentile(n, 10)),
@@ -358,7 +358,9 @@ def collect_summaries(out_dir: str | Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     summ, scenes = [], []
     for m in metas:
         d = json.loads(m.read_text())
-        summ.append(d["summary"])
+        row = {k: v for k, v in d["summary"].items() if k != "n_scenes_with_data"}
+        row["n_scenes_with_clear"] = sum(1 for sc in d["scenes"] if sc["clear_fraction"] > 0)
+        summ.append(row)
         scenes.extend(d["scenes"])
     order = {s: i for i, s in enumerate(SEASONS)}
     s_df = pd.DataFrame(summ)
