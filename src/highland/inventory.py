@@ -1,4 +1,11 @@
-"""Per-acquisition availability audit: clear-pixel shares of the AOI from SCL and QA_PIXEL."""
+"""Per-acquisition availability audit: clear-pixel shares of the AOI from SCL and QA_PIXEL.
+
+Inventory schema notes: one row per acquisition (platform + local solar day). The columns
+``collection_category``, ``correction`` and ``relative_orbit`` are the sorted unique values of the
+fused items joined with ``+`` (a plain string such as ``"T1"`` or ``"T1+T2"``, never a list).
+The 12 ``scl_share_*`` columns are mutually exclusive and sum to 1; the Landsat ``qa_*_share``
+columns are overlapping flags (a pixel can be cloud, dilated and shadow) and must not be summed.
+"""
 
 from __future__ import annotations
 
@@ -365,6 +372,7 @@ def clear_counts(
 ) -> tuple[list[tuple[int, int]], dict[str, NDArray[np.uint16]]]:
     """Return sorted (year, month) keys and per-pixel clear-observation counts per variant."""
     want = cache_meta([], geobox, "")
+    ids_by_key = {k: sorted(v) for k, v in zip(df["acq_id"], df["item_ids"], strict=True)}
     cache_dir = Path(out_dir) / "cache"
     ok = df[df["status"] == "ok"]
     yms = sorted({(int(y), int(m)) for y, m in zip(ok["year"], ok["month"], strict=True)})
@@ -372,6 +380,11 @@ def clear_counts(
     counts: dict[str, NDArray[np.uint16]] = {}
     for key, y, m in zip(ok["acq_id"], ok["year"], ok["month"], strict=True):
         _, clears, meta = _read_cache(_cache_path(cache_dir, sensor, key))
+        if meta.get("item_ids") != ids_by_key[key]:
+            raise ValueError(
+                f"{key}: cached item_ids {meta.get('item_ids')} differ from the inventory row "
+                f"{ids_by_key[key]}; rerun run_audit (stale cache) before counting."
+            )
         for k in ("shape", "transform", "crs"):
             if meta.get(k) != want[k]:
                 raise ValueError(

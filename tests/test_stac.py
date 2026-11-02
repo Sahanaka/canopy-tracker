@@ -179,6 +179,14 @@ def test_aoi_geobox_rejects_wrong_resolution() -> None:
         aoi_geobox(aoi.to_crs("EPSG:4326"), [it], "s2")
 
 
+def test_aoi_geobox_rejects_wrong_resolution_on_later_item() -> None:
+    aoi = gpd.GeoDataFrame(geometry=[box(500010.0, 700010.0, 500100.0, 700100.0)], crs="EPSG:32644")
+    good = _grid_item(499980.0, 701000.0, "SCL", 20.0)
+    bad = _grid_item(499980.0, 701000.0, "SCL", 10.0)
+    with pytest.raises(ValueError, match="refusing to resample"):
+        aoi_geobox(aoi.to_crs("EPSG:4326"), [good, bad], "s2")
+
+
 def test_processing_time_falls_back_to_generation_time() -> None:
     it = _s2()
     it.id = "weird_id"

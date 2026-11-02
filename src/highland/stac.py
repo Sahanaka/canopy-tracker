@@ -196,12 +196,12 @@ def aoi_geobox(aoi: gpd.GeoDataFrame, items: Sequence[pystac.Item], sensor: str)
     res = NATIVE_RESOLUTION_M[sensor]
     grids = [native_grid(i, asset) for i in items]
     crs0, t0 = grids[0]
-    if abs(t0.a) != res or abs(t0.e) != res:
-        raise ValueError(
-            f"{sensor}: first item's {asset} grid is {abs(t0.a)} x {abs(t0.e)} m, "
-            f"expected {res} m; "
-            "refusing to resample silently."
-        )
+    for it, (_, t) in zip(items, grids, strict=True):
+        if abs(t.a) != res or abs(t.e) != res:
+            raise ValueError(
+                f"{sensor}: item {it.id} {asset} grid is {abs(t.a)} x {abs(t.e)} m, "
+                f"expected {res} m; refusing to resample silently."
+            )
     if crs0 != WORK_CRS:
         log.warning("First item CRS is %s, not %s; reads will resample (nearest).", crs0, WORK_CRS)
     offsets = {(round(t.c % res, 6), round(t.f % res, 6)) for _, t in grids}

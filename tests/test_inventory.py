@@ -319,6 +319,18 @@ def test_clear_counts_refuses_other_geobox(aoi, tmp_path) -> None:
         clear_counts(tmp_path, "s2", df, other)
 
 
+def test_clear_counts_refuses_mismatched_item_ids(aoi, tmp_path) -> None:
+    from highland.stac import aoi_geobox
+
+    items = [_s2_item(3)]
+    df = run_audit("s2", items, aoi, tmp_path, reader=_s2_reader([]))
+    gb = aoi_geobox(aoi, items, "s2")
+    df = df.copy()
+    df.at[0, "item_ids"] = ["some_other_item"]
+    with pytest.raises(ValueError, match="item_ids"):
+        clear_counts(tmp_path, "s2", df, gb)
+
+
 def test_run_audit_no_items(aoi, tmp_path) -> None:
     df = run_audit("landsat", [], aoi, tmp_path)
     assert df.empty and list(df.columns) == columns("landsat")
