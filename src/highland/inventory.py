@@ -245,6 +245,11 @@ def run_audit(
     """Audit every acquisition (one at a time); return the inventory with error rows kept."""
     out_dir = Path(out_dir)
     cache_dir = out_dir / "cache"
+    if not items:
+        log.warning("%s: no items to audit", sensor)
+        empty = pd.DataFrame(columns=columns(sensor))
+        empty.attrs["n_error"] = 0
+        return empty
     geobox = aoi_geobox(aoi, items, sensor)
     inside = aoi_inside_mask(aoi, geobox)
     groups = acquisition_groups(items, sensor)

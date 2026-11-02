@@ -229,3 +229,8 @@ def test_window_summary() -> None:
     assert r["season_year"] == 2021 and r["n_acquisitions"] == 2
     assert r["share_zero_obs"] == pytest.approx(0.5) and r["share_ge1_obs"] == pytest.approx(0.5)
     assert r["median_count"] == pytest.approx(0.5)
+
+
+def test_run_audit_no_items(aoi, tmp_path) -> None:
+    df = run_audit("landsat", [], aoi, tmp_path)
+    assert df.empty and list(df.columns) == columns("landsat")
