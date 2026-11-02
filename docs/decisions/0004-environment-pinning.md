@@ -16,6 +16,8 @@ conda-lock lockfile for four platforms.
 - Transitive packages that decide pixel values or grid alignment are also pinned, at the versions the linux-64
   env resolved to: `odc-geo==0.5.3`, `odc-loader==0.6.5`, `pystac==1.15.2`, `pyproj==3.8.0`,
   `libgdal-core==3.13.3`, `proj==9.9.0`, `geos==3.14.1`. The four-platform dry-run solves still succeed.
+- `pyarrow==25.0.0` (added in M1.1; the latest conda-forge release when checked) is a direct dependency for
+  parquet output. The four-platform dry-run solves (linux-64, osx-64, osx-arm64, win-64) succeed with it.
 - `hatchling==1.33.0` is in the env so the editable install also works offline:
   `pip install -e . --no-deps --no-build-isolation`. CI may keep `pip install -e . --no-deps`.
 - Everything else (e.g. fsspec, aiohttp, jupyter internals, other libs) still floats.
