@@ -11,9 +11,11 @@ from pathlib import Path
 from typing import Any
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 import pyogrio
 import shapely
+from affine import Affine
 from pyproj import CRS
 from shapely.geometry import Point
 
@@ -451,6 +453,58 @@ def load_field_points(
         if out[c].isna().any():  # safety net: a required code must never become NaN silently
             raise FieldDataError([f"'{c}' has values that could not be matched to the vocabulary"])
     return out
+
+
+def write_cog(
+    array: np.ndarray,
+    path: str | Path,
+    transform: Affine,
+    crs: str | CRS,
+    nodata: float | int | None,
+    descriptions: Sequence[str] | None = None,
+    tags: dict[str, str] | None = None,
+) -> Path:
+    """Write a (bands, y, x) or (y, x) array as a deflate-compressed COG; NaN/ints per dtype."""
+    import tempfile
+
+    import rasterio
+    import rasterio.shutil
+
+    arr = np.asarray(array)
+    if arr.ndim == 2:
+        arr = arr[None]
+    if arr.ndim != 3:
+        raise ValueError(f"array must be (bands, y, x) or (y, x), got shape {arr.shape}")
+    if descriptions is not None and len(descriptions) != arr.shape[0]:
+        raise ValueError(f"{len(descriptions)} descriptions for {arr.shape[0]} bands")
+    dst = Path(path)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    predictor = 3 if arr.dtype.kind == "f" else 2
+    with tempfile.TemporaryDirectory(dir=dst.parent) as tmp:
+        src_path = Path(tmp) / "src.tif"
+        with rasterio.open(
+            src_path,
+            "w",
+            driver="GTiff",
+            height=arr.shape[1],
+            width=arr.shape[2],
+            count=arr.shape[0],
+            dtype=arr.dtype,
+            crs=CRS.from_user_input(crs),
+            transform=transform,
+            nodata=nodata,
+        ) as out:
+            out.write(arr)
+            for i, d in enumerate(descriptions or [], start=1):
+                out.set_band_description(i, d)
+            if tags:
+                out.update_tags(**{k: str(v) for k, v in tags.items()})
+        tmp_dst = dst.with_suffix(".tmp.tif")
+        rasterio.shutil.copy(
+            src_path, tmp_dst, driver="COG", compress="DEFLATE", predictor=predictor, blocksize=512
+        )
+        tmp_dst.replace(dst)
+    return dst
 
 
 def main(argv: list[str] | None = None) -> int:
