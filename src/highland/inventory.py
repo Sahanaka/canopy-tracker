@@ -408,6 +408,45 @@ def month_year_table(df: pd.DataFrame, value: str, agg: str = "sum") -> pd.DataF
     return t.reindex(columns=range(1, 13)).fillna(0.0)
 
 
+def baseline_era(df: pd.DataFrame) -> pd.Series:
+    """Label S2 rows 'pre-04.00', 'post-04.00' or 'mixed' from baseline_min/max (04.00 = (4, 0))."""
+    lo = df["baseline_min"].map(lambda b: parse_baseline(b) >= (4, 0))
+    hi = df["baseline_max"].map(lambda b: parse_baseline(b) >= (4, 0))
+    return pd.Series(
+        np.where(lo & hi, "post-04.00", np.where(~lo & ~hi, "pre-04.00", "mixed")),
+        index=df.index,
+        name="baseline_era",
+    )
+
+
+def write_clear_counts(
+    path: str | Path, yms: Sequence[tuple[int, int]], counts: NDArray[np.uint16], geobox: GeoBox
+) -> Path:
+    """Write per-pixel clear-observation counts (uint16, one band per year-month) to a GeoTIFF."""
+    import rasterio
+
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if counts.shape[0] != len(yms):
+        raise ValueError("counts must have one band per (year, month).")
+    with rasterio.open(
+        p,
+        "w",
+        driver="GTiff",
+        height=counts.shape[1],
+        width=counts.shape[2],
+        count=counts.shape[0],
+        dtype="uint16",
+        crs=str(geobox.crs),
+        transform=geobox.transform,
+        compress="deflate",
+    ) as dst:
+        for i, (y, m) in enumerate(yms, 1):
+            dst.write(counts[i - 1], i)
+            dst.set_band_description(i, f"{y}-{m:02d}")
+    return p
+
+
 def season_year(year: int, month: int, months: Sequence[int]) -> int | None:
     """Return the season year of a month for a window of chronological months, else None."""
     # A window that wraps the new year (first month > last month, e.g. 12, 1, 2) assigns its
@@ -434,11 +473,18 @@ def window_summary(
     windows: Mapping[str, Sequence[int]],
     years: Sequence[int],
     today: date | None = None,
+    search_range: tuple[date, date] | None = None,
 ) -> pd.DataFrame:
-    """Return one row per window and season-year: n_ok, n_error, zero-obs share, median, partial."""
+    """Return one row per window and season-year: n_ok, n_error, zero-obs share, median, partial.
+
+    partial_window is True when the window is not fully inside the searched date range
+    (search_range, end capped at today); without it, the first and last acquisition dates are used.
+    """
     today = today or date.today()
     first = last = None
-    if len(df):
+    if search_range is not None:
+        first, last = search_range[0], min(search_range[1], today)
+    elif len(df):
         d = pd.to_datetime(df["date_local"]).dt.date
         first, last = d.min(), min(d.max(), today)
     out: list[dict[str, object]] = []

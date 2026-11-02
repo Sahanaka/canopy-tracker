@@ -192,3 +192,19 @@ def test_processing_time_falls_back_to_generation_time() -> None:
     it.id = "weird_id"
     it.properties["s2:generation_time"] = "2024-08-05T21:56:17.000000Z"
     assert s2_processing_time(it) == "20240805T215617"
+
+
+def test_item_table_columns_and_cover() -> None:
+    from shapely.geometry import mapping
+
+    from highland.stac import item_table
+
+    aoi = gpd.GeoDataFrame(geometry=[box(500000.0, 700000.0, 500400.0, 700400.0)], crs="EPSG:32644")
+    it = _s2()
+    half = gpd.GeoSeries([box(500000.0, 700000.0, 500200.0, 700400.0)], crs="EPSG:32644")
+    it.geometry = mapping(half.to_crs("EPSG:4326").iloc[0])
+    t = item_table([it], aoi)
+    assert t["platform"].iloc[0] == "sentinel-2a"
+    assert t["tile"].iloc[0] == "44NMN"
+    assert t["aoi_cover_frac"].iloc[0] == pytest.approx(0.5, abs=0.01)
+    assert item_table([_s2()])["aoi_cover_frac"].isna().all()

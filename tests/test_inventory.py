@@ -334,3 +334,56 @@ def test_clear_counts_refuses_mismatched_item_ids(aoi, tmp_path) -> None:
 def test_run_audit_no_items(aoi, tmp_path) -> None:
     df = run_audit("landsat", [], aoi, tmp_path)
     assert df.empty and list(df.columns) == columns("landsat")
+
+
+def test_window_summary_search_range_makes_partial_exact() -> None:
+    df = pd.DataFrame(
+        {
+            "status": ["ok"],
+            "year": [2023],
+            "month": [6],
+            "date_local": ["2023-06-10"],
+        }
+    )
+    inside = np.ones((2, 2), dtype=bool)
+    counts = np.zeros((1, 2, 2), dtype=np.uint16)
+    kw = {"windows": {"SWM": (5, 6, 7, 8, 9)}, "years": [2023]}
+    args = (df, [(2023, 6)], counts, inside)
+    # Dates in df only span 2023-06-10, so the df-based rule calls the window partial ...
+    assert window_summary(*args, **kw, today=date(2024, 1, 1))["partial_window"].iloc[0]
+    # ... while a search range covering May-September makes it complete.
+    out = window_summary(
+        *args, **kw, today=date(2024, 1, 1), search_range=(date(2023, 1, 1), date(2023, 12, 31))
+    )
+    assert not out["partial_window"].iloc[0]
+    # A range that starts mid-window is partial.
+    out = window_summary(
+        *args, **kw, today=date(2024, 1, 1), search_range=(date(2023, 7, 1), date(2023, 12, 31))
+    )
+    assert out["partial_window"].iloc[0]
+
+
+def test_baseline_era_labels() -> None:
+    df = pd.DataFrame(
+        {
+            "baseline_min": ["02.05", "04.00", "03.00", "05.10"],
+            "baseline_max": ["02.05", "05.10", "04.00", "05.10"],
+        }
+    )
+    assert inventory.baseline_era(df).tolist() == ["pre-04.00", "post-04.00", "mixed", "post-04.00"]
+
+
+def test_write_clear_counts_bands(aoi, tmp_path) -> None:
+    import rasterio
+
+    from highland.stac import aoi_geobox
+
+    gb = aoi_geobox(aoi, [_s2_item(3)], "s2")
+    arr = np.arange(2 * gb.shape[0] * gb.shape[1], dtype=np.uint16).reshape(2, *gb.shape)
+    p = inventory.write_clear_counts(tmp_path / "c.tif", [(2023, 3), (2023, 4)], arr, gb)
+    with rasterio.open(p) as src:
+        assert src.count == 2 and src.dtypes[0] == "uint16"
+        assert src.descriptions == ("2023-03", "2023-04")
+        assert src.crs.to_epsg() == 32644
+        np.testing.assert_array_equal(src.read(2), arr[1])
+        assert src.transform.almost_equals(gb.transform)
