@@ -1,4 +1,11 @@
-"""Per-acquisition availability audit: clear-pixel shares of the AOI from SCL and QA_PIXEL."""
+"""Per-acquisition availability audit: clear-pixel shares of the AOI from SCL and QA_PIXEL.
+
+Inventory schema notes: one row per acquisition (platform + local solar day). The columns
+``collection_category``, ``correction`` and ``relative_orbit`` are the sorted unique values of the
+fused items joined with ``+`` (a plain string such as ``"T1"`` or ``"T1+T2"``, never a list).
+The 12 ``scl_share_*`` columns are mutually exclusive and sum to 1; the Landsat ``qa_*_share``
+columns are overlapping flags (a pixel can be cloud, dilated and shadow) and must not be summed.
+"""
 
 from __future__ import annotations
 
@@ -365,6 +372,7 @@ def clear_counts(
 ) -> tuple[list[tuple[int, int]], dict[str, NDArray[np.uint16]]]:
     """Return sorted (year, month) keys and per-pixel clear-observation counts per variant."""
     want = cache_meta([], geobox, "")
+    ids_by_key = {k: sorted(v) for k, v in zip(df["acq_id"], df["item_ids"], strict=True)}
     cache_dir = Path(out_dir) / "cache"
     ok = df[df["status"] == "ok"]
     yms = sorted({(int(y), int(m)) for y, m in zip(ok["year"], ok["month"], strict=True)})
@@ -372,6 +380,11 @@ def clear_counts(
     counts: dict[str, NDArray[np.uint16]] = {}
     for key, y, m in zip(ok["acq_id"], ok["year"], ok["month"], strict=True):
         _, clears, meta = _read_cache(_cache_path(cache_dir, sensor, key))
+        if meta.get("item_ids") != ids_by_key[key]:
+            raise ValueError(
+                f"{key}: cached item_ids {meta.get('item_ids')} differ from the inventory row "
+                f"{ids_by_key[key]}; rerun run_audit (stale cache) before counting."
+            )
         for k in ("shape", "transform", "crs"):
             if meta.get(k) != want[k]:
                 raise ValueError(
@@ -393,6 +406,85 @@ def month_year_table(df: pd.DataFrame, value: str, agg: str = "sum") -> pd.DataF
     grouped = ok.groupby(["year", "month"])[value]
     t = (grouped.sum() if agg == "sum" else grouped.count()).unstack("month")
     return t.reindex(columns=range(1, 13)).fillna(0.0)
+
+
+def baseline_era(df: pd.DataFrame) -> pd.Series:
+    """Label S2 rows 'pre-04.00', 'post-04.00' or 'mixed' from baseline_min/max (04.00 = (4, 0))."""
+    lo = df["baseline_min"].map(lambda b: parse_baseline(b) >= (4, 0))
+    hi = df["baseline_max"].map(lambda b: parse_baseline(b) >= (4, 0))
+    return pd.Series(
+        np.where(lo & hi, "post-04.00", np.where(~lo & ~hi, "pre-04.00", "mixed")),
+        index=df.index,
+        name="baseline_era",
+    )
+
+
+COUNT_NODATA = 65535  # uint16 nodata for pixels outside the AOI polygon in the count rasters
+
+
+def clear_rate_by_window(
+    df: pd.DataFrame, variant: str, windows: Mapping[str, Sequence[int]]
+) -> pd.DataFrame:
+    """Return per-window mean/median clear fraction (0-1) of acquisitions with data, all years."""
+    d = df[(df["status"] == "ok") & (df["valid_frac"] > 0)]
+    rows = []
+    for name, months in windows.items():
+        v = d.loc[d["month"].isin(months), variant]
+        rows.append(
+            {
+                "window": name,
+                "months": len(months),
+                "n_acq": len(v),
+                "mean_clear": float(v.mean()),
+                "median_clear": float(v.median()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def clear_rate_by_month(df: pd.DataFrame, variant: str) -> pd.DataFrame:
+    """Return per calendar month the mean/median clear fraction (0-1) of acquisitions with data."""
+    d = df[(df["status"] == "ok") & (df["valid_frac"] > 0)]
+    g = d.groupby("month")[variant]
+    return pd.DataFrame(
+        {"n_acq": g.size(), "mean_clear": g.mean(), "median_clear": g.median()}
+    ).reindex(range(1, 13))
+
+
+def write_clear_counts(
+    path: str | Path,
+    yms: Sequence[tuple[int, int]],
+    counts: NDArray[np.uint16],
+    geobox: GeoBox,
+    inside: NDArray[np.bool_] | None = None,
+) -> Path:
+    """Write clear counts (uint16, band per year-month); pixels outside the AOI are 65535 nodata."""
+    import rasterio
+
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if counts.shape[0] != len(yms):
+        raise ValueError("counts must have one band per (year, month).")
+    with rasterio.open(
+        p,
+        "w",
+        driver="GTiff",
+        height=counts.shape[1],
+        width=counts.shape[2],
+        count=counts.shape[0],
+        dtype="uint16",
+        crs=str(geobox.crs),
+        transform=geobox.transform,
+        compress="deflate",
+        nodata=COUNT_NODATA if inside is not None else None,
+    ) as dst:
+        for i, (y, m) in enumerate(yms, 1):
+            band = counts[i - 1]
+            if inside is not None:
+                band = np.where(inside, band, np.uint16(COUNT_NODATA))
+            dst.write(band, i)
+            dst.set_band_description(i, f"{y}-{m:02d}")
+    return p
 
 
 def season_year(year: int, month: int, months: Sequence[int]) -> int | None:
@@ -421,11 +513,21 @@ def window_summary(
     windows: Mapping[str, Sequence[int]],
     years: Sequence[int],
     today: date | None = None,
+    search_range: tuple[date, date] | None = None,
 ) -> pd.DataFrame:
-    """Return one row per window and season-year: n_ok, n_error, zero-obs share, median, partial."""
+    """Return one row per window and season-year: scene counts, zero-obs share, count tail, partial.
+
+    n_ok counts ok rows; n_with_data counts those with valid_frac > 0 (no-data swaths excluded).
+    share_le1/le2_obs and p10_count describe the lower tail of the per-pixel count (AOI pixels).
+
+    partial_window is True when the window is not fully inside the searched date range
+    (search_range, end capped at today); without it, the first and last acquisition dates are used.
+    """
     today = today or date.today()
     first = last = None
-    if len(df):
+    if search_range is not None:
+        first, last = search_range[0], min(search_range[1], today)
+    elif len(df):
         d = pd.to_datetime(df["date_local"]).dt.date
         first, last = d.min(), min(d.max(), today)
     out: list[dict[str, object]] = []
@@ -441,6 +543,11 @@ def window_summary(
                 for st, y, m in zip(df["status"], df["year"], df["month"], strict=True)
             ]
             n_ok = sum(1 for st, hit in sel if hit and st == "ok")
+            n_data = sum(
+                1
+                for (st, hit), vf in zip(sel, df["valid_frac"], strict=True)
+                if hit and st == "ok" and vf > 0
+            )
             n_err = sum(1 for st, hit in sel if hit and st == "error")
             w_start, w_end = _window_span(months, sy)
             partial = bool(first is None or w_start < first or w_end > last)
@@ -449,9 +556,13 @@ def window_summary(
                     "window": name,
                     "season_year": sy,
                     "n_ok": n_ok,
+                    "n_with_data": n_data,
                     "n_error": n_err,
                     "share_zero_obs": float((tot == 0).mean()),
                     "share_ge1_obs": float((tot >= 1).mean()),
+                    "share_le1_obs": float((tot <= 1).mean()),
+                    "share_le2_obs": float((tot <= 2).mean()),
+                    "p10_count": float(np.percentile(tot, 10)),
                     "median_count": float(np.median(tot)),
                     "partial_window": partial,
                 }

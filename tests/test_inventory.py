@@ -229,6 +229,7 @@ def test_window_summary() -> None:
             "month": [1, 12, 1, 6, 2],
             "date_local": ["2019-01-05", "2020-12-05", "2021-01-05", "2021-06-05", "2021-02-10"],
             "status": ["ok", "ok", "ok", "ok", "error"],
+            "valid_frac": [1.0, 1.0, 0.0, 1.0, 1.0],  # the Jan 2021 acquisition has no data
         }
     )
     out = window_summary(
@@ -243,6 +244,10 @@ def test_window_summary() -> None:
     assert out["season_year"].tolist() == [2019, 2020, 2021, 2022]  # every year in the span
     r = out.set_index("season_year")
     assert r.loc[2021, "n_ok"] == 2 and r.loc[2021, "n_error"] == 1
+    assert r.loc[2021, "n_with_data"] == 1 and r.loc[2020, "n_with_data"] == 0
+    assert r.loc[2021, "share_le1_obs"] == pytest.approx(0.75)  # counts [1,2,0,0]
+    assert r.loc[2021, "share_le2_obs"] == 1.0
+    assert r.loc[2021, "p10_count"] == pytest.approx(0.0)
     assert r.loc[2021, "share_zero_obs"] == pytest.approx(0.5)
     assert r.loc[2021, "share_ge1_obs"] == pytest.approx(0.5)
     assert r.loc[2021, "median_count"] == pytest.approx(0.5)
@@ -319,6 +324,103 @@ def test_clear_counts_refuses_other_geobox(aoi, tmp_path) -> None:
         clear_counts(tmp_path, "s2", df, other)
 
 
+def test_clear_counts_refuses_mismatched_item_ids(aoi, tmp_path) -> None:
+    from highland.stac import aoi_geobox
+
+    items = [_s2_item(3)]
+    df = run_audit("s2", items, aoi, tmp_path, reader=_s2_reader([]))
+    gb = aoi_geobox(aoi, items, "s2")
+    df = df.copy()
+    df.at[0, "item_ids"] = ["some_other_item"]
+    with pytest.raises(ValueError, match="item_ids"):
+        clear_counts(tmp_path, "s2", df, gb)
+
+
 def test_run_audit_no_items(aoi, tmp_path) -> None:
     df = run_audit("landsat", [], aoi, tmp_path)
     assert df.empty and list(df.columns) == columns("landsat")
+
+
+def test_window_summary_search_range_makes_partial_exact() -> None:
+    df = pd.DataFrame(
+        {
+            "status": ["ok"],
+            "year": [2023],
+            "month": [6],
+            "date_local": ["2023-06-10"],
+            "valid_frac": [1.0],
+        }
+    )
+    inside = np.ones((2, 2), dtype=bool)
+    counts = np.zeros((1, 2, 2), dtype=np.uint16)
+    kw = {"windows": {"SWM": (5, 6, 7, 8, 9)}, "years": [2023]}
+    args = (df, [(2023, 6)], counts, inside)
+    # Dates in df only span 2023-06-10, so the df-based rule calls the window partial ...
+    assert window_summary(*args, **kw, today=date(2024, 1, 1))["partial_window"].iloc[0]
+    # ... while a search range covering May-September makes it complete.
+    out = window_summary(
+        *args, **kw, today=date(2024, 1, 1), search_range=(date(2023, 1, 1), date(2023, 12, 31))
+    )
+    assert not out["partial_window"].iloc[0]
+    # A range that starts mid-window is partial.
+    out = window_summary(
+        *args, **kw, today=date(2024, 1, 1), search_range=(date(2023, 7, 1), date(2023, 12, 31))
+    )
+    assert out["partial_window"].iloc[0]
+
+
+def test_baseline_era_labels() -> None:
+    df = pd.DataFrame(
+        {
+            "baseline_min": ["02.05", "04.00", "03.00", "05.10"],
+            "baseline_max": ["02.05", "05.10", "04.00", "05.10"],
+        }
+    )
+    assert inventory.baseline_era(df).tolist() == ["pre-04.00", "post-04.00", "mixed", "post-04.00"]
+
+
+def test_write_clear_counts_bands(aoi, tmp_path) -> None:
+    import rasterio
+
+    from highland.stac import aoi_geobox
+
+    gb = aoi_geobox(aoi, [_s2_item(3)], "s2")
+    arr = np.arange(2 * gb.shape[0] * gb.shape[1], dtype=np.uint16).reshape(2, *gb.shape)
+    p = inventory.write_clear_counts(tmp_path / "c.tif", [(2023, 3), (2023, 4)], arr, gb)
+    with rasterio.open(p) as src:
+        assert src.count == 2 and src.dtypes[0] == "uint16"
+        assert src.descriptions == ("2023-03", "2023-04")
+        assert src.crs.to_epsg() == 32644
+        np.testing.assert_array_equal(src.read(2), arr[1])
+        assert src.transform.almost_equals(gb.transform)
+
+
+def test_clear_rate_tables() -> None:
+    df = pd.DataFrame(
+        {
+            "status": ["ok", "ok", "ok", "error"],
+            "month": [3, 3, 6, 3],
+            "valid_frac": [1.0, 0.0, 1.0, 1.0],
+            "clear_base": [0.5, 0.0, 0.2, 0.9],
+        }
+    )
+    w = inventory.clear_rate_by_window(df, "clear_base", {"A": (3, 4), "B": (5, 6, 7)})
+    assert w["n_acq"].tolist() == [1, 1]  # the no-data and error rows are excluded
+    assert w["mean_clear"].tolist() == pytest.approx([0.5, 0.2])
+    m = inventory.clear_rate_by_month(df, "clear_base")
+    assert len(m) == 12 and m.loc[3, "n_acq"] == 1 and np.isnan(m.loc[1, "mean_clear"])
+
+
+def test_write_clear_counts_outside_aoi_is_nodata(aoi, tmp_path) -> None:
+    import rasterio
+
+    from highland.stac import aoi_geobox
+
+    gb = aoi_geobox(aoi, [_s2_item(3)], "s2")
+    inside = aoi_inside_mask(aoi, gb)
+    arr = np.ones((1, *gb.shape), dtype=np.uint16)
+    p = inventory.write_clear_counts(tmp_path / "c.tif", [(2023, 3)], arr, gb, inside)
+    with rasterio.open(p) as src:
+        assert src.nodata == inventory.COUNT_NODATA
+        m = src.read(1, masked=True)
+        assert m.mask.sum() == (~inside).sum() and m.sum() == inside.sum()

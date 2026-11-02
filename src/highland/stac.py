@@ -16,6 +16,7 @@ import pystac
 import pystac_client
 from affine import Affine
 from odc.geo.geobox import GeoBox
+from shapely.geometry import shape
 
 from highland.aoi import WORK_CRS
 
@@ -156,6 +157,42 @@ def dedupe_s2(items: Sequence[pystac.Item]) -> tuple[list[pystac.Item], pd.DataF
     return kept, pd.DataFrame(dropped, columns=cols)
 
 
+def item_table(items: Sequence[pystac.Item], aoi: gpd.GeoDataFrame | None = None) -> pd.DataFrame:
+    """Return one row per item: platform, tile/row, baseline (S2), tier (Landsat), AOI cover 0-1."""
+    aoi_geom = aoi.to_crs(WORK_CRS).geometry.iloc[0] if aoi is not None else None
+    rows = []
+    for it in items:
+        p = it.properties
+        cover = float("nan")
+        if aoi_geom is not None and it.geometry:
+            g = gpd.GeoSeries([shape(it.geometry)], crs="EPSG:4326").to_crs(WORK_CRS).iloc[0]
+            cover = float(g.intersection(aoi_geom).area / aoi_geom.area)
+        rows.append(
+            {
+                "id": it.id,
+                "platform": str(p.get("platform")).lower(),
+                "datetime": it.datetime,
+                "tile": p.get("s2:mgrs_tile")
+                or f"{p.get('landsat:wrs_path')}/{p.get('landsat:wrs_row')}",
+                "baseline": p.get("s2:processing_baseline"),
+                "collection_category": p.get("landsat:collection_category"),
+                "aoi_cover_frac": cover,
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "id",
+            "platform",
+            "datetime",
+            "tile",
+            "baseline",
+            "collection_category",
+            "aoi_cover_frac",
+        ],
+    )
+
+
 def local_date(dt: datetime) -> str:
     """Return the Sri Lanka local calendar date (YYYY-MM-DD) of a timezone-aware datetime."""
     return dt.astimezone(LOCAL_TZ).date().isoformat()
@@ -196,12 +233,12 @@ def aoi_geobox(aoi: gpd.GeoDataFrame, items: Sequence[pystac.Item], sensor: str)
     res = NATIVE_RESOLUTION_M[sensor]
     grids = [native_grid(i, asset) for i in items]
     crs0, t0 = grids[0]
-    if abs(t0.a) != res or abs(t0.e) != res:
-        raise ValueError(
-            f"{sensor}: first item's {asset} grid is {abs(t0.a)} x {abs(t0.e)} m, "
-            f"expected {res} m; "
-            "refusing to resample silently."
-        )
+    for it, (_, t) in zip(items, grids, strict=True):
+        if abs(t.a) != res or abs(t.e) != res:
+            raise ValueError(
+                f"{sensor}: item {it.id} {asset} grid is {abs(t.a)} x {abs(t.e)} m, "
+                f"expected {res} m; refusing to resample silently."
+            )
     if crs0 != WORK_CRS:
         log.warning("First item CRS is %s, not %s; reads will resample (nearest).", crs0, WORK_CRS)
     offsets = {(round(t.c % res, 6), round(t.f % res, 6)) for _, t in grids}

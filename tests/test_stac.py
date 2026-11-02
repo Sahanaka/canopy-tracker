@@ -179,8 +179,32 @@ def test_aoi_geobox_rejects_wrong_resolution() -> None:
         aoi_geobox(aoi.to_crs("EPSG:4326"), [it], "s2")
 
 
+def test_aoi_geobox_rejects_wrong_resolution_on_later_item() -> None:
+    aoi = gpd.GeoDataFrame(geometry=[box(500010.0, 700010.0, 500100.0, 700100.0)], crs="EPSG:32644")
+    good = _grid_item(499980.0, 701000.0, "SCL", 20.0)
+    bad = _grid_item(499980.0, 701000.0, "SCL", 10.0)
+    with pytest.raises(ValueError, match="refusing to resample"):
+        aoi_geobox(aoi.to_crs("EPSG:4326"), [good, bad], "s2")
+
+
 def test_processing_time_falls_back_to_generation_time() -> None:
     it = _s2()
     it.id = "weird_id"
     it.properties["s2:generation_time"] = "2024-08-05T21:56:17.000000Z"
     assert s2_processing_time(it) == "20240805T215617"
+
+
+def test_item_table_columns_and_cover() -> None:
+    from shapely.geometry import mapping
+
+    from highland.stac import item_table
+
+    aoi = gpd.GeoDataFrame(geometry=[box(500000.0, 700000.0, 500400.0, 700400.0)], crs="EPSG:32644")
+    it = _s2()
+    half = gpd.GeoSeries([box(500000.0, 700000.0, 500200.0, 700400.0)], crs="EPSG:32644")
+    it.geometry = mapping(half.to_crs("EPSG:4326").iloc[0])
+    t = item_table([it], aoi)
+    assert t["platform"].iloc[0] == "sentinel-2a"
+    assert t["tile"].iloc[0] == "44NMN"
+    assert t["aoi_cover_frac"].iloc[0] == pytest.approx(0.5, abs=0.01)
+    assert item_table([_s2()])["aoi_cover_frac"].isna().all()
