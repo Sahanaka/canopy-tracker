@@ -73,7 +73,7 @@ Per window-year, `outputs/M1.2/s2_<season-year>_<WIN>_*` (EPSG:32644, 10 m, 1001
 swir16 B11, swir22 B12), `_obs.tif` (uint16: `n_obs`, `thin`, `window_day_median`; nodata 65535 outside the AOI), plus
 `clear_masks/*.npz`, `scenes_used.csv`, `composite_summary.csv`, `meta/*.json` and a README with the resolved environment.
 `window_day_median` replaces the planned `doy_median` (a median day of year is meaningless for NEM, which spans the new year);
-see the plan's Deviations. Measured size: 1.7 GB (about 40 MB per window-year; masks 2.8 MB in total).
+see the plan's Deviations. Measured size: 1.81 GB = 1.7 GiB (about 40 MB per window-year; masks 2.8 MB in total).
 
 ### D6 Index guard
 
@@ -107,7 +107,7 @@ own item ids and its parameters in `meta/` and in the GeoTIFF tags, and is recom
 
 - Pilot, cold: SIM 2023 (12 scenes) 58 s, peak RSS 1.2 GB; SWM 2023 (30 scenes) 132 s, peak RSS 2.6 GB.
 - Full run, cold: 43 window-years, 691 acquisitions, 2970 s (49.5 min), peak RSS 3.4 GB (SWM 2025, 39 scenes). About 4.3 s per
-  acquisition. Output 1.7 GB.
+  acquisition. Output 1.81 GB.
 
 ## Consequences
 
