@@ -12,7 +12,7 @@ Tasks marked **[human]** need the owner (field work, drawing, decisions); agents
 - [x] **M0.2 CI**
   - GitHub Actions workflow running ruff and `pytest -m "not network"` on push and PR (micromamba or pip).
   - README badge and a "How to run" section.
-- [ ] **M0.3 AOI** **[human draws, agent validates]**
+- [x] **M0.3 AOI** **[human draws, agent validates]**
   - Owner commits `data/aoi/aoi.geojson`. Agent adds `highland.aoi.load_aoi()` that validates: single polygon, EPSG:4326, area 50–200 km², inside Sri Lanka's bounding box; with tests.
 - [x] **M0.4 Field form spec**
   - `docs/field/form.md` describing the QField form (fields: class, canopy openness, photos, notes, date) and the expected GeoJSON schema.

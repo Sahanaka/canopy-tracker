@@ -1,7 +1,8 @@
 # Area of interest (AOI)
 
 `data/aoi/aoi.geojson` is the single polygon (about 10 x 10 km, Bandarawela-Haputale belt, Uva Province) that every
-other part of the project clips to. No coordinates are hard-coded anywhere else.
+other part of the project clips to. No coordinates are hard-coded anywhere else. How the current AOI was chosen,
+and how to move it, is in `docs/decisions/0009-aoi-selection.md`.
 
 ## Rules
 
