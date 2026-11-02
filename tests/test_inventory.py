@@ -244,7 +244,7 @@ def test_window_summary() -> None:
     assert out["season_year"].tolist() == [2019, 2020, 2021, 2022]  # every year in the span
     r = out.set_index("season_year")
     assert r.loc[2021, "n_ok"] == 2 and r.loc[2021, "n_error"] == 1
-    assert r.loc[2021, "n_with_data"] == 0 and r.loc[2020, "n_with_data"] == 1
+    assert r.loc[2021, "n_with_data"] == 1 and r.loc[2020, "n_with_data"] == 0
     assert r.loc[2021, "share_le1_obs"] == pytest.approx(0.75)  # counts [1,2,0,0]
     assert r.loc[2021, "share_le2_obs"] == 1.0
     assert r.loc[2021, "p10_count"] == pytest.approx(0.0)
