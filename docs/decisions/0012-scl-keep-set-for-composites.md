@@ -27,7 +27,10 @@ Class 2 therefore changes the clear fraction by 0.12 percentage points and class
 
 - **Keep class 2, mask class 7.** The clear set is SCL {2, 4, 5, 6}. In code: `masking.SCL_KEEP_M12`, and
   `scl_clear(scl, keep_cast_shadow=True, keep_unclassified=False)`.
-- A pixel is additionally a valid observation only if all seven reflectance bands are non-zero (DN 0 is no-data).
+- A pixel is additionally a valid observation only if all seven reflectance bands are non-zero (DN 0 is no-data). This holds
+  for the 20 m bands only because `stac.load_s2_acquisition` forces source nodata 0 for every asset: some files (the 02.12
+  files, some 05.13 files, S2C 2026-09-08) declare no nodata, and without the override GDAL turns DN 0 into 1 in the warp, which
+  the offset then maps to a small negative reflectance that bilinear resampling blends into valid neighbours.
 - Both classes stay configurable (`keep=(keep_cast_shadow, keep_unclassified)` in `composites.composite_window`). The keep
   flags are part of the resume key and are written into the GeoTIFF tags, so a change recomputes the composites.
 - The share of AOI pixels that classes 2 and 7 remove is logged for every scene (`outputs/M1.2/scenes_used.csv`,
@@ -53,6 +56,3 @@ Class 2 therefore changes the clear fraction by 0.12 percentage points and class
   ADR 0013 is derived from the M1.2 counts, not copied from ADR 0011.
 - The era effect is a possible confound: class 2 and 7 shares are 2-6 times larger before baseline 04.00 than after, so a
   pre/post-2021 step in the masked share could look like change. The per-scene shares are stored to check this.
-- Classes 0 and 1 are conflated in scenes whose SCL file declares no nodata (GDAL writes 0 as 1 under a nodata of 0 in the
-  destination). Both are masked, so masks are unaffected, but the stored `scl_share_0` is then understated (class 0 reads as 1)
-  for those scenes.

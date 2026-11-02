@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 from collections import defaultdict
@@ -281,6 +282,28 @@ def aoi_geobox(
     return GeoBox((ny, nx), Affine(res, 0.0, left, 0.0, -res, top), WORK_CRS)
 
 
+class _SrcNodataZeroReader:
+    """Wrap an odc reader so every source is read with source nodata 0 (S2 DN 0 / SCL 0)."""
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+
+    def read(self, cfg, dst_geobox, **kw):  # type: ignore[no-untyped-def]
+        """Read with src_nodata_override = 0, whatever the file declares (or omits)."""
+        return self._inner.read(dataclasses.replace(cfg, src_nodata_override=0), dst_geobox, **kw)  # type: ignore[attr-defined]
+
+
+def _s2_reader_driver():  # type: ignore[no-untyped-def]
+    """Return an odc-stac rasterio driver that forces source nodata 0 for every asset."""
+    from odc.loader._rio import RioDriver
+
+    class _Driver(RioDriver):
+        def open(self, src, ctx):  # type: ignore[no-untyped-def]
+            return _SrcNodataZeroReader(super().open(src, ctx))
+
+    return _Driver()
+
+
 def load_s2_acquisition(
     items: Sequence[pystac.Item], geobox: GeoBox, bands: Sequence[str] = tuple(S2_BANDS)
 ) -> xr.Dataset:
@@ -320,6 +343,7 @@ def load_s2_acquisition(
         stac_cfg=cfg,
         chunks={"x": 512, "y": 512},
         fail_on_error=True,
+        driver=_s2_reader_driver(),
     )
     if ds.sizes["time"] != 1:
         raise RuntimeError(f"Expected 1 time slice for one acquisition, got {ds.sizes['time']}.")
