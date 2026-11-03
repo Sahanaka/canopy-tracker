@@ -84,6 +84,11 @@ def test_20m_bands_keep_nodata_zero_on_file_without_declared_nodata() -> None:
     )
     assert items, "no S2 item on 2016-04-26 over the AOI"
     key, group = next(iter(stac.acquisition_groups(items, "s2").items()))
+    import planetary_computer
+
+    for asset in ("B8A", "B11", "B12", "SCL"):
+        with rasterio.open(planetary_computer.sign(group[0].assets[asset].href)) as src:
+            assert src.nodata is None, f"{asset} now declares nodata; test no longer exercises fix"
     gb = stac.aoi_geobox(aoi, group, "s2", asset="B02", resolution=10.0)
     ds = stac.load_s2_acquisition(group, gb).compute()
     empty = ds["red"].isel(time=0).values == 0

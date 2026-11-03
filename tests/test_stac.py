@@ -248,3 +248,25 @@ def test_load_s2_acquisition_rejects_mixed_baseline_and_unknown_band() -> None:
         load_s2_acquisition([a, b], None)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="Unknown S2 bands"):
         load_s2_acquisition([a], None, bands=["B04"])  # type: ignore[arg-type]
+
+
+def test_src_nodata_zero_reader_overrides_and_driver_wraps() -> None:
+    """The reader wrapper forces src_nodata_override=0; the driver returns the wrapper."""
+    from odc.loader import RasterLoadParams
+
+    from highland.stac import _s2_reader_driver, _SrcNodataZeroReader
+
+    seen = {}
+
+    class _Inner:
+        def read(self, cfg, dst_geobox, **kw):  # type: ignore[no-untyped-def]
+            seen["cfg"], seen["gbox"], seen["kw"] = cfg, dst_geobox, kw
+            return "ok"
+
+    cfg = RasterLoadParams(dtype="uint16", fill_value=0, resampling="bilinear")
+    assert cfg.src_nodata_override is None
+    out = _SrcNodataZeroReader(_Inner()).read(cfg, "gbox", selection=None)
+    assert out == "ok" and seen["cfg"].src_nodata_override == 0
+    assert seen["cfg"].resampling == "bilinear" and seen["gbox"] == "gbox"
+    assert seen["kw"] == {"selection": None}
+    assert hasattr(_s2_reader_driver(), "open")

@@ -294,7 +294,13 @@ class _SrcNodataZeroReader:
 
 
 def _s2_reader_driver():  # type: ignore[no-untyped-def]
-    """Return an odc-stac rasterio driver that forces source nodata 0 for every asset."""
+    """Return an odc-stac rasterio driver that forces source nodata 0 for every asset.
+
+    Uses the private odc.loader._rio.RioDriver and assumes odc calls only reader.read(cfg,
+    dst_geobox, **kw); checked against the exact pin odc-loader==0.6.5 in environment.yml.
+    Re-check on any upgrade (tests/test_stac.py covers the wrapper offline). _Driver is local,
+    so it does not pickle: fine for the threaded dask scheduler, not for dask.distributed.
+    """
     from odc.loader._rio import RioDriver
 
     class _Driver(RioDriver):
