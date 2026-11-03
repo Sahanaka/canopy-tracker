@@ -1,0 +1,250 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {
+    "point_id": "syn-001",
+    "observed_at": "2026-05-01T10:15:00+05:30",
+    "observer": "AB",
+    "class": "pine",
+    "secondary_class": "alstonia",
+    "opened": "yes",
+    "patch_id": "P-12",
+    "canopy_open_pct": 70,
+    "openness_method": "visual",
+    "photo_1": "photos/syn-001_a.jpg",
+    "photo_2": "photos/syn-001_b.JPG",
+    "photo_3": null,
+    "gps_accuracy_m": 4.5,
+    "position_source": "internal",
+    "notes": null,
+    "extra_note": "kept"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     80.91,
+     6.81
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "point_id": "syn-002",
+    "observed_at": "2026-05-01T10:15:00+05:30",
+    "observer": "AB",
+    "class": "turpentine",
+    "secondary_class": null,
+    "opened": "no",
+    "patch_id": null,
+    "canopy_open_pct": 15,
+    "openness_method": "glama",
+    "photo_1": "photos/syn-002.jpeg",
+    "photo_2": null,
+    "photo_3": null,
+    "gps_accuracy_m": 4.5,
+    "position_source": "internal",
+    "notes": null
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     80.92,
+     6.82
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "point_id": "syn-003",
+    "observed_at": "2026-05-01T04:45:00Z",
+    "observer": "AB",
+    "class": "eucalyptus",
+    "secondary_class": null,
+    "opened": "unsure",
+    "patch_id": null,
+    "canopy_open_pct": 30,
+    "openness_method": "visual",
+    "photo_1": null,
+    "photo_2": null,
+    "photo_3": null,
+    "gps_accuracy_m": null,
+    "position_source": "manual",
+    "notes": null
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     80.93,
+     6.83
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "point_id": "syn-004",
+    "observed_at": "2026-05-01T10:15:00+05:30",
+    "observer": "AB",
+    "class": "native_broadleaf",
+    "secondary_class": null,
+    "opened": "no",
+    "patch_id": null,
+    "canopy_open_pct": 5,
+    "openness_method": "visual",
+    "photo_1": "photos/syn-004.png",
+    "photo_2": "photos/syn-004b.jpg",
+    "photo_3": "photos/syn-004c.jpg",
+    "gps_accuracy_m": 4.5,
+    "position_source": "internal",
+    "notes": "steep, wet"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     80.94,
+     6.84
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "point_id": "syn-005",
+    "observed_at": "2026-05-01T10:15:00+05:30",
+    "observer": "AB",
+    "class": "tea",
+    "secondary_class": null,
+    "opened": "unsure",
+    "patch_id": null,
+    "canopy_open_pct": 100,
+    "openness_method": "visual",
+    "photo_1": null,
+    "photo_2": null,
+    "photo_3": null,
+    "gps_accuracy_m": 4.5,
+    "position_source": "internal",
+    "notes": null
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     80.95,
+     6.85
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "point_id": "syn-006",
+    "observed_at": "2026-05-01T10:15:00+05:30",
+    "observer": "AB",
+    "class": "unsure",
+    "secondary_class": null,
+    "opened": "no",
+    "patch_id": null,
+    "canopy_open_pct": 0,
+    "openness_method": "visual",
+    "photo_1": null,
+    "photo_2": null,
+    "photo_3": null,
+    "gps_accuracy_m": 4.5,
+    "position_source": "internal",
+    "notes": null
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     80.96,
+     6.86,
+     1650.0
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "point_id": "syn-007",
+    "observed_at": "2026-05-01T10:15:00+05:30",
+    "observer": "AB",
+    "class": "grassland",
+    "secondary_class": null,
+    "opened": "yes",
+    "patch_id": null,
+    "canopy_open_pct": 95,
+    "openness_method": "visual",
+    "photo_1": null,
+    "photo_2": null,
+    "photo_3": null,
+    "gps_accuracy_m": 4.5,
+    "position_source": "internal",
+    "notes": null
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     80.97,
+     6.87
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "point_id": "syn-008",
+    "observed_at": "2026-05-01T10:15:00+05:30",
+    "observer": "AB",
+    "class": "settlement",
+    "secondary_class": null,
+    "opened": "no",
+    "patch_id": null,
+    "canopy_open_pct": 60,
+    "openness_method": "visual",
+    "photo_1": null,
+    "photo_2": null,
+    "photo_3": null,
+    "gps_accuracy_m": 4.5,
+    "position_source": "internal",
+    "notes": null
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     80.975,
+     6.875
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "point_id": "syn-009",
+    "observed_at": "2026-05-01T10:15:00+05:30",
+    "observer": "AB",
+    "class": "other",
+    "secondary_class": null,
+    "opened": "no",
+    "patch_id": null,
+    "canopy_open_pct": 50,
+    "openness_method": "visual",
+    "photo_1": null,
+    "photo_2": null,
+    "photo_3": null,
+    "gps_accuracy_m": 4.5,
+    "position_source": "internal",
+    "notes": null
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     80.98,
+     6.88
+    ]
+   }
+  }
+ ]
+}

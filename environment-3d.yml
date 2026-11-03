@@ -1,0 +1,13 @@
+# Optional 3D/viewer layer. Apply on top of the main env:
+#   micromamba install -n highland -f environment-3d.yml && playwright install chromium
+# Not used by CI.
+name: highland
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - pyvista==0.49.1
+  - trame==4.0.0
+  - trame-vtk==2.11.17
+  - trame-vuetify==3.3.0
+  - pytest-playwright==0.10.0

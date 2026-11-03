@@ -1,0 +1,15 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+.DS_Store
+
+# generated outputs (see outputs/README.md)
+outputs/*
+!outputs/README.md
+
+# field data: photos (EXIF GPS, size) and points on private land are never committed (ADR 0008)
+data/field/photos/
+data/field/private/

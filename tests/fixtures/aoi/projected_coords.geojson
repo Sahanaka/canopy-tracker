@@ -1,0 +1,1 @@
+{"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [[[500000, 750000], [510000, 750000], [510000, 760000], [500000, 760000], [500000, 750000]]]}}]}
