@@ -84,3 +84,9 @@ def test_plotter_construction() -> None:
         assert p.mesh is not None or len(p.renderer.actors) > 0
     finally:
         p.close()
+
+
+def test_on_view_note_names_the_dsm() -> None:
+    assert "DSM" in viz3d.DEM_NOTE and "canopy" in viz3d.DEM_NOTE
+    u8, (lo, hi) = viz3d.rgb_stretch(np.random.default_rng(0).random((5, 6, 3)).astype(np.float32))
+    assert u8.dtype == np.uint8 and lo < hi

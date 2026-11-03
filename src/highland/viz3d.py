@@ -18,6 +18,7 @@ if TYPE_CHECKING:  # pragma: no cover
 Kind = Literal["continuous", "categorical", "rgb"]
 OKABE_ITO = ["#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#000000"]
 NOTE = "3D is for viewing, not measuring"
+DEM_NOTE = "DEM: Copernicus GLO-30 DSM (canopy included)"
 
 
 def _check_crs(da: xr.DataArray, name: str) -> Any:
@@ -84,7 +85,7 @@ def drape_arrays(
     }
 
 
-def _rgb_u8(
+def rgb_stretch(
     rgb: np.ndarray, lo: float = 2.0, hi: float = 98.0
 ) -> tuple[np.ndarray, tuple[float, float]]:
     """Stretch float RGB (y, x, 3) to uint8 with one 2-98 percentile range for all bands."""
@@ -104,12 +105,14 @@ def drape(
     off_screen: bool = False,
     screenshot: str | None = None,
     window_size: tuple[int, int] = (1100, 800),
+    class_names: dict[float, str] | None = None,
 ) -> pv.Plotter:
     """Drape `layer` on `dem` and return a PyVista Plotter (z in m x exaggeration; default 1x).
 
     The view always prints the vertical exaggeration and that 3D is not for measuring. With
     `screenshot` (a PNG path) the scene is rendered and saved; off-screen rendering needs a
     display or a wrapper such as `xvfb-run -a` (ADR 0005). Call `.show()` for the notebook view.
+    `class_names` maps class values to legend labels for kind='categorical'; NaN draws light grey.
     """
     import pyvista as pv
 
@@ -119,23 +122,27 @@ def drape(
     grid = pv.StructuredGrid(xx, yy, z.T)
     sc = a["scalars"]
     plotter = pv.Plotter(off_screen=off_screen, window_size=list(window_size))
-    note = f"Vertical exaggeration: {exaggeration:g}x. {NOTE}"
+    note = f"Vertical exaggeration: {exaggeration:g}x. {NOTE}\n{DEM_NOTE}"
     if kind == "rgb":
-        u8, (lo, hi) = _rgb_u8(sc)
+        u8, (lo, hi) = rgb_stretch(sc)
         grid.point_data["rgb"] = u8.reshape(-1, 3)
         plotter.add_mesh(grid, scalars="rgb", rgb=True)
         note += f"\nRGB stretch: one 2-98 percentile range, {lo:.3f}-{hi:.3f}"
     else:
         grid.point_data["layer"] = sc.ravel()
         if kind == "categorical":
-            classes = np.unique(sc[np.isfinite(sc)])
+            names = class_names or {}
+            classes = sorted({*np.unique(sc[np.isfinite(sc)]).tolist(), *names})
             colors = [OKABE_ITO[i % len(OKABE_ITO)] for i in range(len(classes))]
             plotter.add_mesh(
                 grid,
                 scalars="layer",
                 cmap=colors,
-                categories=True,
-                scalar_bar_args={"title": title or "class"},
+                clim=(min(classes), max(classes)),
+                n_colors=len(classes),
+                nan_color="lightgrey",
+                annotations={float(c): names.get(c, str(c)) for c in classes},
+                scalar_bar_args={"title": title or "class", "n_labels": 0},
             )
         else:
             plotter.add_mesh(

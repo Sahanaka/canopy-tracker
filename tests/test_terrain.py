@@ -217,18 +217,18 @@ def test_horizon_buffer() -> None:
 
 def test_scene_shadow_keys_and_crop() -> None:
     z = _half_plane(60, 40, 100.0)
-    out = T.scene_shadow(z, RES, 90.0, 40.0, buf_cells=5)
+    out = T.scene_shadow(z, RES, 90.0, 40.0, buf_cells=5, z_cap=100.0)
     assert out["any"].shape == (50, 50) and out["cos_i"].dtype == np.float32
     assert np.array_equal(out["any"], out["self"] | out["cast"])
     assert out["cast"].any()
     with pytest.raises(ValueError):
-        T.scene_shadow(z, RES, 90.0, 40.0, buf_cells=0)
+        T.scene_shadow(z, RES, 90.0, 40.0, buf_cells=0, z_cap=100.0)
 
 
 def test_scene_shadow_self_on_steep_slope() -> None:
     t = np.tan(np.radians(60.0))  # 60 deg slope descending to the west, sun in the east at 50 deg
     z = plane(t, 0.0, shape=(20, 20))  # rises to the east: faces west, away from an eastern sun
-    out = T.scene_shadow(z, RES, 90.0, 50.0, buf_cells=2)
+    out = T.scene_shadow(z, RES, 90.0, 50.0, buf_cells=2, check_buffer=False)
     assert out["self"].all()
 
 
@@ -331,7 +331,9 @@ def test_composite_shadow_roundtrip(tmp_path: Path) -> None:
     )
     inside = np.ones((n_fine, n_fine), bool)
     inside[:, :2] = False
-    tif = T.composite_shadow(npz, z, nb, fine, inside, tmp_path / "out")
+    tif = T.composite_shadow(
+        npz, z, nb, fine, inside, tmp_path / "out", z_cap=120.0, check_buffer=False
+    )
     with rasterio.open(tif) as ds:
         assert ds.count == 4 and ds.crs.to_epsg() == 32644 and ds.res == (10.0, 10.0)
         assert ds.transform == fine.transform
@@ -342,9 +344,16 @@ def test_composite_shadow_roundtrip(tmp_path: Path) -> None:
     assert np.array_equal(np.isnan(a[0]) & inside, (n_obs == 0) & inside)
     assert np.nanmax(a[0]) <= 1.0 and np.nanmax(a[1]) <= 3
     mtime = tif.stat().st_mtime_ns
-    assert T.composite_shadow(npz, z, nb, fine, inside, tmp_path / "out") == tif
+    assert (
+        T.composite_shadow(
+            npz, z, nb, fine, inside, tmp_path / "out", z_cap=120.0, check_buffer=False
+        )
+        == tif
+    )
     assert tif.stat().st_mtime_ns == mtime  # resumed, not recomputed
-    T.composite_shadow(npz, z + 1.0, nb, fine, inside, tmp_path / "out")
+    T.composite_shadow(
+        npz, z + 1.0, nb, fine, inside, tmp_path / "out", z_cap=121.0, check_buffer=False
+    )
     assert tif.stat().st_mtime_ns != mtime  # DEM changed -> recomputed
     with pytest.raises(ValueError):
         T.composite_shadow(
@@ -355,3 +364,20 @@ def test_composite_shadow_roundtrip(tmp_path: Path) -> None:
             inside[:20, :20],
             tmp_path / "o2",
         )
+
+
+def test_scene_shadow_raises_when_buffer_too_narrow() -> None:
+    z = np.full((200, 200), 1044.0)
+    z[:, 140:] = 1300.0
+    # needed at 52.38 deg: (2527 - 1044) / tan = 1142 m -> 39 cells; 38 cells is too few.
+    with pytest.raises(ValueError, match="narrower"):
+        T.scene_shadow(z, RES, 143.0, 52.38, buf_cells=38)
+    # a lower sun (44 deg, Landsat winter) needs about 1535 m = 52 cells
+    assert T.horizon_buffer_m(1044.0, 44.0) == pytest.approx(1535.0, abs=1.0)
+    big = np.full((260, 260), 1044.0)
+    with pytest.raises(ValueError, match="narrower"):
+        T.scene_shadow(big, RES, 143.0, 44.0, buf_cells=39)
+    T.scene_shadow(big, RES, 143.0, 44.0, buf_cells=52)  # enough
+    # z_cap=None uses the DEM maximum: no raise for a flat plate
+    T.scene_shadow(z, RES, 143.0, 52.38, buf_cells=7, z_cap=None)
+    T.scene_shadow(z, RES, 143.0, 52.38, buf_cells=39)  # 1170 m >= 1142 m: fine

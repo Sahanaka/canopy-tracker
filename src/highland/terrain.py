@@ -280,17 +280,28 @@ def scene_shadow(
     buf_cells: int,
     step_frac: float = 0.5,
     z_cap: float | None = HIGHEST_POINT_M,
+    check_buffer: bool = True,
 ) -> dict[str, NDArray]:
     """Return the AOI-grid shadow masks and cos i for one sun position (cells cropped by buf_cells).
 
     Keys: 'self' (cos i <= 0), 'cast' (horizon above the sun), 'any' (union), all bool, and
     'cos_i' float32 in [-1, 1]. `dem_buf` is the buffered DEM in m; az 0-360, elev 0-90 deg.
+    Raises if the buffer is too narrow for this elevation: horizon_buffer_m(z_min of the AOI
+    cells, elev, z_cap) must not exceed buf_cells * res (z_cap=None: the DEM maximum is used);
+    check_buffer=False disables this, for synthetic geometry tests only.
     """
     ny, nx = dem_buf.shape
     b = buf_cells
     if b < 1:
         raise ValueError("buf_cells must be >= 1 (the Horn ring must stay outside the AOI).")
     inner = (slice(b, ny - b), slice(b, nx - b))
+    z_top = float(np.nanmax(dem_buf)) if z_cap is None else z_cap
+    need = horizon_buffer_m(float(np.nanmin(dem_buf[inner])), elev_deg, z_top)
+    if check_buffer and need > b * res:
+        raise ValueError(
+            f"DEM buffer {b * res:g} m is narrower than the {need:.0f} m needed at sun elevation "
+            f"{elev_deg:.2f} deg; load a wider buffer."
+        )
     cos_i = cos_incidence(dem_buf, res, az_deg, elev_deg)[inner]
     self_sh = cos_i <= 0
     cast = cast_shadow(dem_buf, res, az_deg, elev_deg, inner, step_frac, z_cap)
@@ -454,6 +465,8 @@ def composite_shadow(
     step_frac: float = 0.5,
     res: float = TERRAIN_RES_M,
     force: bool = False,
+    z_cap: float | None = HIGHEST_POINT_M,
+    check_buffer: bool = True,
 ) -> Path:
     """Write <stem>_shadow.tif (4 float32 bands, 10 m) and <stem>_shadow.json for one window-year.
 
@@ -476,7 +489,7 @@ def composite_shadow(
         "buf_cells": buf_cells,
         "step_frac": step_frac,
         "res": res,
-        "z_cap": HIGHEST_POINT_M,
+        "z_cap": z_cap,
         "shape": list(fine.shape),
     }
     if not force and tif.exists() and meta.exists():
@@ -493,7 +506,14 @@ def composite_shadow(
     n_inside = int(inside.sum())
     for t in range(nt):
         sc = scene_shadow(
-            dem_buf, res, float(m["az"][t]), float(m["elev"][t]), buf_cells, step_frac
+            dem_buf,
+            res,
+            float(m["az"][t]),
+            float(m["elev"][t]),
+            buf_cells,
+            step_frac,
+            z_cap,
+            check_buffer,
         )
         shape = tuple(fine.shape)
         f = {k: to_fine(sc[k], 3, shape) for k in ("self", "cast", "any", "cos_i")}
