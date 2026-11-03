@@ -139,3 +139,13 @@ def test_dem_lakes_and_water_frequency() -> None:
     water = np.array([[[True]], [[False]], [[False]]])
     clear = np.array([[[True]], [[True]], [[False]]])
     assert C.water_frequency(water, clear)[0, 0] == 0.5
+
+
+def test_threshold_centroid_sign_and_empty() -> None:
+    mask = np.zeros((60, 60), bool)
+    mask[28:32, 28:32] = True
+    f20 = np.zeros((30, 30))
+    f20[12:16, 15:19] = 1.0  # 10 m rows 24-31, cols 30-37: centre 2 px north, 4 px east of the mask
+    r = C.threshold_centroid(f20, mask, 0.5)
+    assert r is not None and r["dx_m"] == pytest.approx(40.0) and r["dy_m"] == pytest.approx(20.0)
+    assert C.threshold_centroid(f20, mask, 1.5) is None

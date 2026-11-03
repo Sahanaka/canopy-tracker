@@ -384,9 +384,23 @@ def test_scene_shadow_raises_when_buffer_too_narrow() -> None:
 
 
 def test_scene_shadow_z_min_argument() -> None:
-    z = np.full((200, 200), 1000.0)
-    z[:, 0:60] = 1000.0
-    # bbox minimum 1000 m needs 1263 m = 43 cells at 52.38 deg; polygon minimum 1044 m needs 39
+    z = np.full((200, 200), 1044.0)
+    z[100, 100] = 1000.0  # inside the computed interior
+    # interior minimum 1000 m needs 1263 m = 43 cells at 52.38 deg; z_min 1044 m needs 39 cells
     with pytest.raises(ValueError, match="narrower"):
         T.scene_shadow(z, RES, 143.0, 52.38, buf_cells=39)
     T.scene_shadow(z, RES, 143.0, 52.38, buf_cells=39, z_min=1044.0)
+
+
+def test_z_min_aoi_includes_partial_edge_cells() -> None:
+    inside = np.zeros((10, 10), bool)  # 4 x 4 cells of 3 px, the last cell only 1 px wide/high
+    inside[:, :] = True
+    inside[9, 9] = True
+    dem = np.full((4, 4), 1100.0)
+    dem[3, 3] = 1008.0  # partial corner cell (centre would be outside the 10 x 10 pixel grid)
+    assert T.z_min_aoi(dem, inside) == 1008.0
+    inside[9, :] = False
+    inside[:, 9] = False
+    assert T.z_min_aoi(dem, inside) == 1100.0  # corner cell no longer contains an AOI pixel
+    with pytest.raises(ValueError):
+        T.z_min_aoi(np.zeros((5, 5)), inside)

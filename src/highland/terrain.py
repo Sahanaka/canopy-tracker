@@ -62,6 +62,23 @@ def nested_geobox(fine: GeoBox, factor: int = 3, buffer_m: float = 0.0) -> GeoBo
     return GeoBox((cy + 2 * nb, cx + 2 * nb), tr, fine.crs)
 
 
+def z_min_aoi(dem30: NDArray[np.floating], inside_fine: Bool, factor: int = 3) -> float:
+    """Return the minimum height (m) over every 30 m cell that contains any AOI pixel at 10 m.
+
+    `dem30` is the (ny30, nx30) AOI-grid DEM nested in `inside_fine` (the fine bool AOI mask).
+    Edge cells that are only partly covered by the fine grid or the polygon count, because
+    they feed AOI pixels (their centres may lie outside the polygon).
+    """
+    ny, nx = inside_fine.shape
+    ny30, nx30 = dem30.shape
+    if ny30 != -(-ny // factor) or nx30 != -(-nx // factor):
+        raise ValueError("dem30 does not nest in the fine grid.")
+    pad = np.zeros((ny30 * factor, nx30 * factor), bool)
+    pad[:ny, :nx] = inside_fine
+    any_in = pad.reshape(ny30, factor, nx30, factor).any(axis=(1, 3))
+    return float(np.min(dem30[any_in]))
+
+
 def buffer_cells(buffer_m: float, res: float = TERRAIN_RES_M) -> int:
     """Return the buffer width in whole cells (ceil of buffer_m / res)."""
     return math.ceil(buffer_m / res - 1e-9)

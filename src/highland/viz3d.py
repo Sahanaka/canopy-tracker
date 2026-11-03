@@ -130,6 +130,8 @@ def drape(
         note += f"\nRGB stretch: one 2-98 percentile range, {lo:.3f}-{hi:.3f}"
     else:
         grid.point_data["layer"] = sc.ravel()
+        if np.isnan(sc).any():
+            note += "\nLight grey: no data (outside the AOI or no valid observation)"
         if kind == "categorical":
             names = class_names or {}
             classes = sorted({*np.unique(sc[np.isfinite(sc)]).tolist(), *names})

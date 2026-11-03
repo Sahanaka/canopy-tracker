@@ -367,8 +367,9 @@ def run_all(
     # AOI-only DEM first (data-derived z_min), then the horizon buffer from it.
     aoi_box = T.nested_geobox(fine, 3, 0.0)
     dem0 = T.load_cop_dem(aoi, aoi_box)
-    inside30 = aoi_inside_mask(aoi, aoi_box)
-    z_min = float(dem0.values[inside30].min())
+    inside = aoi_inside_mask(aoi, fine)
+    inside30 = aoi_inside_mask(aoi, aoi_box)  # 30 m cells whose centre is inside (slope statistics)
+    z_min = T.z_min_aoi(dem0.values, inside)
     z_max_aoi = float(dem0.values[inside30].max())
     w_m = T.horizon_buffer_m(z_min, elev_min)
     nb = T.buffer_cells(w_m)
@@ -381,7 +382,7 @@ def run_all(
     crop_diff = float(np.abs(z[inner] - dem0.values).max())
     if crop_diff > 1.0:
         raise RuntimeError(f"AOI crop of the buffered DEM differs by {crop_diff} m (> 1 m).")
-    z_min_buf = float(z[inner][inside30].min())
+    z_min_buf = T.z_min_aoi(z[inner], inside)
     w_check = T.horizon_buffer_m(z_min_buf, elev_min)
     if w_check > nb * T.TERRAIN_RES_M:
         raise RuntimeError(f"Buffer {nb * 30} m is smaller than the {w_check} m required.")
@@ -390,6 +391,7 @@ def run_all(
             "dem_items": dem.attrs["items"],
             "elev_min_deg": elev_min,
             "elev_max_deg": elev_max,
+            "z_min_definition": "min over 30 m cells with any AOI pixel at 10 m (T.z_min_aoi)",
             "z_min_aoi_m": z_min,
             "z_min_aoi_buffered_load_m": z_min_buf,
             "buffer_m_required_buffered_load": w_check,
@@ -426,7 +428,6 @@ def run_all(
 
     # Per-window shadow COGs.
     t0 = time.time()
-    inside = aoi_inside_mask(aoi, fine)
     masks = sorted((m12 / "clear_masks").glob("s2_*.npz"))
     if only:
         masks = [m for m in masks if m.stem in only]
@@ -532,7 +533,7 @@ def run_diagnostics(
     )
     if (tr_buf.c, tr_buf.f) != (box30.transform.c - nb * 30, box30.transform.f + nb * 30):
         raise RuntimeError("dem_30m_buffer.tif is not nested in the M1.2 grid.")
-    z_min_poly = float(z[nb:-nb, nb:-nb][aoi_inside_mask(aoi, box30)].min())
+    z_min_poly = T.z_min_aoi(z[nb:-nb, nb:-nb], inside)
     rows_out = []
     gb20 = None
     todo = scenes[scenes["scl_share_2"] > 0] if run_scl2 else scenes.iloc[0:0]
@@ -714,6 +715,37 @@ def water_frequency(water: Bool, clear: Bool) -> NDArray[np.float32]:
     return out
 
 
+def threshold_centroid(
+    freq20: NDArray, mask10: Bool, cut: float, margin_px: int = 12
+) -> dict[str, float] | None:
+    """Return the (dx, dy) offset in m (east, north) of the centroid of water frequency >= cut
+    from the lake mask centroid, within `margin_px` (10 m) of the mask's bounding box.
+
+    The frequency (20 m) is replicated 2 x 2 onto the 10 m lattice of the mask. None if empty.
+    """
+    f10 = np.repeat(np.repeat(np.nan_to_num(freq20, nan=0.0), 2, 0), 2, 1)
+    rr, cc = np.nonzero(mask10)
+    near = np.zeros(f10.shape, bool)
+    near[max(rr.min() - margin_px, 0) : rr.max() + margin_px + 1,
+         max(cc.min() - margin_px, 0) : cc.max() + margin_px + 1] = True  # fmt: skip
+    w = np.where(near & (f10 >= cut), 1.0, 0.0)
+    if w.sum() == 0:
+        return None
+    yy, xx = np.mgrid[0 : f10.shape[0], 0 : f10.shape[1]]
+    return {
+        "dx_m": 10 * float((xx * w).sum() / w.sum() - cc.mean()),
+        "dy_m": 10 * float(-((yy * w).sum() / w.sum() - rr.mean())),
+    }
+
+
+def m11_scl_geobox(root: str | Path) -> GeoBox:
+    """Return the 20 m SCL GeoBox (shape, transform) stored in the M1.1 per-acquisition cache."""
+    first = sorted((Path(root) / "outputs" / "M1.1" / "cache" / "s2").glob("*.npz"))[0]
+    with np.load(first) as z:
+        meta = json.loads(str(z["_meta"]))
+    return GeoBox(tuple(meta["shape"]), Affine(*meta["transform"][:6]), meta["crs"])
+
+
 def lake_alignment(
     root: str | Path,
     out_dir: str | Path | None = None,
@@ -735,8 +767,8 @@ def lake_alignment(
     from affine import Affine
 
     from highland import stac
-    from highland.aoi import load_aoi  # noqa: F401  (AOI file must exist, as in the other checks)
 
+    t_start = time.time()
     root = Path(root)
     out = Path(out_dir) if out_dir else root / "outputs" / "M1.3"
     with rasterio.open(out / "terrain_30m.tif") as ds:
@@ -751,10 +783,11 @@ def lake_alignment(
     raw = stac.load_items(root / M11_ITEMS)
     items, _ = stac.dedupe_s2(raw)
     by_id = {i.id: i for i in items}
-    gb20 = GeoBox((501, 501), Affine(20, 0, 489180.0, 0, -20, 758080.0), "EPSG:32644")
+    gb20 = m11_scl_geobox(root)
     half = int(half_window_m // 20)
     rng = np.random.default_rng(seed)
     csv_rows, boot_rows, arrays = [], [], {}
+    lk_mask10: dict[int, Bool] = {}
     pooled = {k: [] for k in ("lake", "flat")}
     for li, lk in enumerate(lakes, start=1):
         r_c, c_c = lk["centre_rc"]
@@ -774,6 +807,7 @@ def lake_alignment(
         masks = {k: sample_coarse(lk[k], ri, ci) for k in ("lake", "flat")}
         arrays[f"freq20_lake{li}"] = freq20
         arrays[f"mask10_lake{li}"] = masks["lake"]
+        lk_mask10[li] = masks["lake"]
         arrays[f"flat10_lake{li}"] = masks["flat"]
         arrays[f"water_lake{li}"] = water
         arrays[f"clear_lake{li}"] = clear
@@ -821,7 +855,11 @@ def lake_alignment(
     boot = pd.DataFrame(boot_rows)
     boot.to_csv(out / "lake_alignment_bootstrap.csv", index=False)
     np.savez_compressed(out / "water_frequency.npz", **arrays)
-    result: dict[str, Any] = {"n_scenes": len(sel), "lakes": []}
+    result: dict[str, Any] = {
+        "n_scenes": len(sel),
+        "lakes": [],
+        "convention": "dx>0 east, dy>0 north",
+    }
     for li, lk in enumerate(lakes, start=1):
         row: dict[str, Any] = {
             "lake": li,
@@ -845,8 +883,14 @@ def lake_alignment(
         row["bootstrap_dy_m_p2.5_p50_p97.5"] = (
             10 * np.percentile(bl_.dy_px, [2.5, 50, 97.5])
         ).tolist()
+        row["threshold_centroid_offset_m"] = {
+            str(cut): threshold_centroid(arrays[f"freq20_lake{li}"], lk_mask10[li], cut)
+            for cut in (0.3, 0.5, 0.7)
+        }
         c = table[(table["lake"] == li) & (table["mask"] == "centroid")].iloc[0]
         row["centroid_offset_m"] = {"dx": 10 * float(c.dx_px), "dy": 10 * float(c.dy_px)}
         result["lakes"].append(row)
+    result["seconds"] = round(time.time() - t_start, 1)
+    result["scl_grid"] = {"shape": list(gb20.shape), "transform": list(gb20.transform)[:6]}
     (out / "lake_alignment.json").write_text(json.dumps(result, indent=1))
     return result
