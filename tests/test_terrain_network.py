@@ -86,7 +86,7 @@ def test_dem_equals_rasterio_reproject(dem, coarse) -> None:
         out = np.where(np.isnan(out), tmp, out)
     xs = coarse.transform.c + 30.0 * (np.arange(dem.shape[1]) + 0.5)
     away_from_seam = np.abs(xs - 500000.0) > 100.0  # tile edge: one-pixel differences allowed
-    # odc-stac and a direct rasterio reproject differ by <= 0.07 m (measured; GDAL's warp approximates
+    # odc-stac and a direct rasterio reproject differ by <= 0.07 m (measured; GDAL warp approximates
     # the coordinate transform per row); 0.1 m is far below the DEM's 2-4 m relative accuracy.
     np.testing.assert_allclose(dem.values[:, away_from_seam], out[:, away_from_seam], atol=0.1)
 
