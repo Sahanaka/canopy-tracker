@@ -479,11 +479,13 @@ def run_diagnostics(
     fetch_mtd: bool = True,
     workers: int = 8,
     windows: Sequence[str] = ("s2_2023_SWM", "s2_2023_NEM"),
+    force: bool = False,
 ) -> dict[str, Any]:
     """Write sun_grid_check.csv, scl2_vs_model.csv, illumination_bins.csv, alignment_shift.csv.
 
     Needs run_all's outputs. The sun-grid check downloads one MTD_TL.xml per scene (network);
     the SCL-2 check reads the M1.1 per-acquisition cache (20 m); the others read M1.2/M1.3 COGs.
+    Each part is skipped when its CSV exists, unless force=True.
     """
     import rasterio
 
@@ -502,7 +504,7 @@ def run_diagnostics(
     result: dict[str, Any] = {}
 
     # D5: tile-mean angles versus the MTD_TL grid at the AOI.
-    if fetch_mtd:
+    if fetch_mtd and (force or not (out / "sun_grid_check.csv").exists()):
         t0 = time.time()
         raw = stac.load_items(root / M11_ITEMS)
         items, _ = stac.dedupe_s2(raw)
@@ -517,6 +519,7 @@ def run_diagnostics(
 
     # Class-2 diagnostic: modelled shadow vs SCL class 2 at the 20 m SCL grid.
     t0 = time.time()
+    run_scl2 = force or not (out / "scl2_vs_model.csv").exists()
     with rasterio.open(out / "dem_30m_buffer.tif") as ds:
         z = ds.read(1).astype(np.float32)
         tr_buf = ds.transform
@@ -531,7 +534,8 @@ def run_diagnostics(
         raise RuntimeError("dem_30m_buffer.tif is not nested in the M1.2 grid.")
     rows_out = []
     gb20 = None
-    for _, sc in scenes[scenes["scl_share_2"] > 0].iterrows():
+    todo = scenes[scenes["scl_share_2"] > 0] if run_scl2 else scenes.iloc[0:0]
+    for _, sc in todo.iterrows():
         cache = m11 / "cache" / "s2" / f"{sc['acq_id']}.npz"
         with np.load(cache) as zc:
             meta = json.loads(str(zc["_meta"]))
@@ -558,8 +562,9 @@ def run_diagnostics(
                 **r,
             }
         )
-    pd.DataFrame(rows_out).to_csv(out / "scl2_vs_model.csv", index=False)
-    _timed(timings, "scl2_vs_model", t0)
+    if run_scl2:
+        pd.DataFrame(rows_out).to_csv(out / "scl2_vs_model.csv", index=False)
+        _timed(timings, "scl2_vs_model", t0)
 
     # Illumination bins and alignment shift for two windows.
     bins, shifts = [], []

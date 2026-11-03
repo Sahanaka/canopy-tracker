@@ -32,4 +32,3 @@ pins; none are shared today.
   then EGL ("Could not initialize a device") and then OSMesa ("libOSMesa not found"). conda-forge has no OSMesa build of VTK on linux-64 (`micromamba search "*osmesa*"` finds nothing), so a pin is not possible.
   Rendering under `xvfb-run -a` (system package, GLX software rendering, `vtkXOpenGLRenderWindow`) works. M1.3's notebook was executed that way:
   `xvfb-run -a jupyter nbconvert --to notebook --execute notebooks/03_terrain.ipynb ...`. On a desktop with a display no wrapper is needed. Building the plotter without rendering (the unit test) works without a display.
-

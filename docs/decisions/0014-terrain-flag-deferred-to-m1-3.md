@@ -45,4 +45,3 @@ The original text above is unchanged. One correction, one confirmation and one l
 - **Size.** The "about 50-100 kB per window-year" estimate holds: the 43 `clear_masks/*.npz` total 2.8 MB, about 65 kB each.
 - **Implemented.** M1.3 computed the flag from these stored masks and angles without rereading any imagery; the angles are the tile means from `scenes_used.csv` (checked against the MTD_TL grids, ADR 0016). The SCL class 2 statement in "Decision" stays true:
   class 2 was kept as clear, and ADR 0016 reports how it relates to the modelled shadow. See ADR 0015 (DEM, grid, derivatives) and ADR 0016 (flag).
-
