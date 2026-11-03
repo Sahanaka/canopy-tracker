@@ -102,3 +102,40 @@ def test_sun_grid_table_with_fake_fetch() -> None:
     )  # type: ignore[arg-type]
     assert len(t) == 1 and t.loc[0, "csv_zenith_deg"] == pytest.approx(grid["mean_zenith"])
     assert t.loc[0, "slope_equiv_deg"] >= 0 and t.loc[0, "spread_zen"] >= 0
+
+
+def test_offset_correlation_sign_convention() -> None:
+    mask = np.zeros((40, 40), bool)
+    mask[18:22, 18:22] = True
+    feat = np.zeros((40, 40))
+    feat[16:20, 21:25] = 1.0  # 2 px north (rows decrease) and 3 px east of the mask
+    t = C.offset_correlation(feat, mask, 6)
+    best = C.best_offset(t)
+    assert (best.dx_px, best.dy_px) == (3, 2) and best.r == pytest.approx(1.0)
+
+
+def test_alignment_uses_strongest_abs_r() -> None:
+    a = np.random.default_rng(1).random((40, 40))
+    b = -np.roll(a, shift=(1, 2), axis=(0, 1))  # perfectly anti-correlated at one shift
+    t = C.shift_correlation(a, b, 3)
+    strongest = t.loc[t["r"].abs().idxmax()]
+    assert (strongest.dy, strongest.dx) == (1, 2) or strongest.r < -0.9
+    assert t.loc[t["r"].idxmax()].r > strongest.r  # signed idxmax would pick another shift
+
+
+def test_dem_lakes_and_water_frequency() -> None:
+    dem = np.add.outer(np.arange(30.0), np.arange(30.0)) * 3.0
+    dem[10:15, 10:15] = 100.0  # flattened lake
+    flat = np.zeros(dem.shape, bool)
+    flat[11:14, 11:14] = True
+    lk = C.dem_lakes(dem, flat)
+    assert (
+        len(lk) == 1
+        and lk[0]["lake"].sum() == 25
+        and lk[0]["flat"].sum() == 9
+        and lk[0]["z"] == 100.0
+    )
+    assert len(C.label_components(np.array([[1, 0, 1]], bool))) == 2
+    water = np.array([[[True]], [[False]], [[False]]])
+    clear = np.array([[[True]], [[True]], [[False]]])
+    assert C.water_frequency(water, clear)[0, 0] == 0.5

@@ -585,7 +585,9 @@ def run_diagnostics(
         s = shift_correlation(np.where(inside, nir, np.nan), cosm, 3)
         s.insert(0, "window", stem)
         shifts.append(s)
-        best = s.loc[s["r"].idxmax()]
+        # The correlation is negative here (land-cover confound), so "best" = strongest |r|;
+        # idxmax() on the signed r would return the weakest relationship.
+        best = s.loc[s["r"].abs().idxmax()]
         result[f"best_shift_{stem}"] = {
             "dy": int(best.dy),
             "dx": int(best.dx),
@@ -595,4 +597,248 @@ def run_diagnostics(
     pd.concat(bins).to_csv(out / "illumination_bins.csv", index=False)
     pd.concat(shifts).to_csv(out / "alignment_shift.csv", index=False)
     result["timings"] = timings
+    return result
+
+
+# --------------------------------------------------------------------------------------------
+# Alignment of the DEM against a known feature: the flattened lakes (CLAUDE.md 3D rule)
+# --------------------------------------------------------------------------------------------
+
+
+def label_components(mask: Bool, connectivity: int = 8) -> list[NDArray[np.intp]]:
+    """Return connected components of a bool (y, x) mask as (n, 2) arrays of (row, col)."""
+    steps = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    if connectivity == 8:
+        steps += [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    todo = {(int(r), int(c)) for r, c in zip(*np.nonzero(mask), strict=True)}
+    comps = []
+    while todo:
+        seed = min(todo)
+        todo.discard(seed)
+        stack, comp = [seed], [seed]
+        while stack:
+            r, c = stack.pop()
+            for dr, dc in steps:
+                q = (r + dr, c + dc)
+                if q in todo:
+                    todo.discard(q)
+                    stack.append(q)
+                    comp.append(q)
+        comps.append(np.array(comp, dtype=np.intp))
+    return comps
+
+
+def dem_lakes(dem: NDArray, flat: Bool, reach: int = 8, tol: float = 1e-3) -> list[dict[str, Any]]:
+    """Return the DEM's flattened lakes: for each component of zero-gradient cells, the 4-connected
+    cells within `reach` cells whose height equals the lake height (m) to within `tol` m.
+
+    Each dict has 'flat' (bool mask, zero-gradient core), 'lake' (bool mask, all flat-height
+    cells joined to the core), 'z' (height, m) and 'centre_rc' (mean row, col of the lake).
+    """
+    out = []
+    for comp in label_components(flat):
+        z = float(np.median(dem[comp[:, 0], comp[:, 1]]))
+        near = np.zeros(dem.shape, bool)
+        r0, c0 = comp.min(0) - reach
+        r1, c1 = comp.max(0) + reach + 1
+        near[max(r0, 0) : r1, max(c0, 0) : c1] = True
+        eq = near & (np.abs(dem - z) <= tol)
+        keep = np.zeros(dem.shape, bool)
+        for lc in label_components(eq, connectivity=4):
+            if (flat[lc[:, 0], lc[:, 1]]).any():
+                keep[lc[:, 0], lc[:, 1]] = True
+        fm = np.zeros(dem.shape, bool)
+        fm[comp[:, 0], comp[:, 1]] = True
+        out.append(
+            {"flat": fm, "lake": keep, "z": z, "centre_rc": tuple(np.argwhere(keep).mean(0))}
+        )
+    return out
+
+
+def offset_correlation(freq: NDArray, mask: NDArray, max_shift: int = 6) -> pd.DataFrame:
+    """Pearson r between freq(x) and mask(x - d) for integer pixel offsets d (dx east, dy north).
+
+    Both arrays are (y, x) on the same lattice (row 0 = north) and the mask must sit at least
+    max_shift pixels from the edge (np.roll wraps). Offset d > 0 means the freq feature lies east
+    / north of the mask. Columns: dx_px, dy_px, r.
+    """
+    rows = []
+    f = freq.astype(float)
+    m = mask.astype(float)
+    for dy in range(-max_shift, max_shift + 1):
+        for dx in range(-max_shift, max_shift + 1):
+            sh = np.roll(m, shift=(-dy, dx), axis=(0, 1))
+            r = float(np.corrcoef(f.ravel(), sh.ravel())[0, 1]) if sh.std() > 0 else np.nan
+            rows.append({"dx_px": dx, "dy_px": dy, "r": r})
+    return pd.DataFrame(rows)
+
+
+def best_offset(table: pd.DataFrame) -> pd.Series:
+    """Return the row with the highest r (a lake mask is expected to correlate positively)."""
+    return table.loc[table["r"].idxmax()]
+
+
+def read_water_stack(
+    scenes: pd.DataFrame,
+    items_by_id: Mapping[str, pystac.Item],
+    window: GeoBox,
+    workers: int = 8,
+) -> tuple[Bool, Bool]:
+    """Return (water, clear) bool (t, y, x) on `window` (20 m SCL grid) for the given scenes.
+
+    water = SCL class 6; clear = SCL class 4, 5 or 6 (the observations that count as clear
+    without class 2). One SCL window read per scene (network).
+    """
+    from highland.inventory import read_layer
+
+    def one(item_id: str) -> tuple[Bool, Bool]:
+        scl = read_layer([items_by_id[item_id]], "s2", window)
+        return scl == 6, np.isin(scl, (4, 5, 6))
+
+    with ThreadPoolExecutor(workers) as ex:
+        res = list(ex.map(one, [str(i) for i in scenes["item_ids"]]))
+    return np.stack([r[0] for r in res]), np.stack([r[1] for r in res])
+
+
+def water_frequency(water: Bool, clear: Bool) -> NDArray[np.float32]:
+    """Return the share of clear observations that were water (0-1; NaN where never clear)."""
+    n = clear.sum(0)
+    out = np.full(n.shape, np.nan, dtype=np.float32)
+    np.divide(water.sum(0), n, out=out, where=n > 0, casting="unsafe")
+    return out
+
+
+def lake_alignment(
+    root: str | Path,
+    out_dir: str | Path | None = None,
+    workers: int = 8,
+    n_boot: int = 300,
+    seed: int = 0,
+    half_window_m: float = 400.0,
+    max_shift_px: int = 6,
+) -> dict[str, Any]:
+    """Shift-correlate the DEM's flattened lakes against SCL class 6 frequency (baseline >= 04.00).
+
+    Scenes: baseline >= 04.00 with clear_fraction > 0.5 in scenes_used.csv. For each lake the
+    water frequency (water / clear observations, no cut) is correlated with the DEM lake mask over
+    offsets of +-max_shift_px x 10 m on a 10 m lattice aligned to the 20 m SCL grid (the SCL is
+    replicated 2 x 2, the 30 m DEM mask sampled by cell). Uncertainty: bootstrap over scenes.
+    Writes lake_alignment.csv, lake_alignment_bootstrap.csv and water_frequency.npz.
+    """
+    import rasterio
+    from affine import Affine
+
+    from highland import stac
+    from highland.aoi import load_aoi  # noqa: F401  (AOI file must exist, as in the other checks)
+
+    root = Path(root)
+    out = Path(out_dir) if out_dir else root / "outputs" / "M1.3"
+    with rasterio.open(out / "terrain_30m.tif") as ds:
+        terr = ds.read()
+        tr = ds.transform
+    box30 = GeoBox(terr.shape[1:], tr, "EPSG:32644")
+    flat = np.isnan(terr[2]) & (terr[1] == 0)
+    lakes = dem_lakes(terr[0], flat)
+    scenes = pd.read_csv(root / "outputs" / "M1.2" / "scenes_used.csv")
+    bl = scenes["baseline"].map(lambda b: stac.parse_baseline(str(b)))
+    sel = scenes[(bl >= (4, 0)) & (scenes["clear_fraction"] > 0.5)]
+    raw = stac.load_items(root / M11_ITEMS)
+    items, _ = stac.dedupe_s2(raw)
+    by_id = {i.id: i for i in items}
+    gb20 = GeoBox((501, 501), Affine(20, 0, 489180.0, 0, -20, 758080.0), "EPSG:32644")
+    half = int(half_window_m // 20)
+    rng = np.random.default_rng(seed)
+    csv_rows, boot_rows, arrays = [], [], {}
+    pooled = {k: [] for k in ("lake", "flat")}
+    for li, lk in enumerate(lakes, start=1):
+        r_c, c_c = lk["centre_rc"]
+        x_c, y_c = tr.c + (c_c + 0.5) * 30.0, tr.f - (r_c + 0.5) * 30.0
+        c20 = int(round((x_c - 489180.0) / 20.0))
+        r20 = int(round((758080.0 - y_c) / 20.0))
+        win = gb20[r20 - half : r20 + half, c20 - half : c20 + half]
+        water, clear = read_water_stack(sel, by_id, win, workers)
+        freq20 = water_frequency(water, clear)
+        wtr = win.transform
+        tgt = GeoBox(
+            (win.shape[0] * 2, win.shape[1] * 2),
+            Affine(10, 0, wtr.c, 0, -10, wtr.f),
+            "EPSG:32644",
+        )
+        ri, ci = coarse_index(box30, tgt)
+        masks = {k: sample_coarse(lk[k], ri, ci) for k in ("lake", "flat")}
+        arrays[f"freq20_lake{li}"] = freq20
+        arrays[f"water_lake{li}"] = water
+        arrays[f"clear_lake{li}"] = clear
+        f10 = np.repeat(np.repeat(np.nan_to_num(freq20, nan=0.0), 2, 0), 2, 1)
+        for k, m in masks.items():
+            t = offset_correlation(f10, m, max_shift_px)
+            t.insert(0, "mask", k)
+            t.insert(0, "lake", li)
+            csv_rows.append(t)
+            pooled[k].append((water, clear, m))
+        for b in range(n_boot):
+            idx = rng.integers(0, water.shape[0], water.shape[0])
+            fb = np.repeat(
+                np.repeat(np.nan_to_num(water_frequency(water[idx], clear[idx]), nan=0.0), 2, 0),
+                2,
+                1,
+            )
+            bt = offset_correlation(fb, masks["lake"], max_shift_px)
+            best = best_offset(bt)
+            boot_rows.append(
+                {"lake": li, "boot": b, "dx_px": int(best.dx_px), "dy_px": int(best.dy_px)}
+            )
+        # frequency-weighted centroid of water (crude, no cut) within the lake window
+        yy, xx = np.mgrid[0 : f10.shape[0], 0 : f10.shape[1]]
+        near = np.zeros(f10.shape, bool)
+        mm = masks["lake"]
+        rr, cc = np.nonzero(mm)
+        near[max(rr.min() - 12, 0) : rr.max() + 13, max(cc.min() - 12, 0) : cc.max() + 13] = True
+        wgt = np.where(near, f10, 0.0)
+        csv_rows.append(
+            pd.DataFrame(
+                [
+                    {
+                        "lake": li,
+                        "mask": "centroid",
+                        "dx_px": float((xx * wgt).sum() / wgt.sum() - cc.mean()),
+                        "dy_px": float(-((yy * wgt).sum() / wgt.sum() - rr.mean())),
+                        "r": np.nan,
+                    }
+                ]
+            )
+        )
+    table = pd.concat(csv_rows, ignore_index=True)
+    table.to_csv(out / "lake_alignment.csv", index=False)
+    boot = pd.DataFrame(boot_rows)
+    boot.to_csv(out / "lake_alignment_bootstrap.csv", index=False)
+    np.savez_compressed(out / "water_frequency.npz", **arrays)
+    result: dict[str, Any] = {"n_scenes": len(sel), "lakes": []}
+    for li, lk in enumerate(lakes, start=1):
+        row: dict[str, Any] = {
+            "lake": li,
+            "z_m": lk["z"],
+            "n_lake_cells": int(lk["lake"].sum()),
+            "n_flat_cells": int(lk["flat"].sum()),
+        }
+        for k in ("lake", "flat"):
+            t = table[(table["lake"] == li) & (table["mask"] == k)]
+            b = best_offset(t)
+            row[f"best_{k}"] = {
+                "dx_m": 10 * int(b.dx_px),
+                "dy_m": 10 * int(b.dy_px),
+                "r": float(b.r),
+                "r_at_0": float(t[(t.dx_px == 0) & (t.dy_px == 0)].r.iloc[0]),
+            }
+        bl_ = boot[boot["lake"] == li]
+        row["bootstrap_dx_m_p2.5_p50_p97.5"] = (
+            10 * np.percentile(bl_.dx_px, [2.5, 50, 97.5])
+        ).tolist()
+        row["bootstrap_dy_m_p2.5_p50_p97.5"] = (
+            10 * np.percentile(bl_.dy_px, [2.5, 50, 97.5])
+        ).tolist()
+        c = table[(table["lake"] == li) & (table["mask"] == "centroid")].iloc[0]
+        row["centroid_offset_m"] = {"dx": 10 * float(c.dx_px), "dy": 10 * float(c.dy_px)}
+        result["lakes"].append(row)
+    (out / "lake_alignment.json").write_text(json.dumps(result, indent=1))
     return result
