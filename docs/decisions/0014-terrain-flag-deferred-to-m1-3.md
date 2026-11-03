@@ -1,6 +1,6 @@
 # 0014 — Terrain-shadow flag deferred to M1.3; M1.2 stores sun geometry and per-scene clear masks
 
-- **Status:** proposed (owner approved recommendation D4 on 2026-11-02; ADR awaits owner sign-off)
+- **Status:** accepted by the owner on 2026-11-03 (recommendation D4 approved 2026-11-02)
 - **Date:** 2026-11-02
 - **Task:** M1.2
 

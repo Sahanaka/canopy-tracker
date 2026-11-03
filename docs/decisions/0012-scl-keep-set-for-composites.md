@@ -1,6 +1,6 @@
 # 0012 — SCL keep-set for the M1.2 composites: keep class 2, mask class 7
 
-- **Status:** proposed (owner approved recommendation D1 on 2026-11-02; ADR awaits owner sign-off)
+- **Status:** accepted by the owner on 2026-11-03 (recommendation D1 approved 2026-11-02)
 - **Date:** 2026-11-02
 - **Task:** M1.2
 

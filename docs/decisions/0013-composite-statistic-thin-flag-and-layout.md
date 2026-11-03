@@ -1,6 +1,6 @@
 # 0013 — Composite statistic, thin flag, index guard, output layout and item source for M1.2
 
-- **Status:** proposed (owner approved recommendations D2, D3, D5, D6, D7 on 2026-11-02; ADR awaits owner sign-off)
+- **Status:** accepted by the owner on 2026-11-03 (recommendations D2, D3, D5, D6, D7 approved 2026-11-02)
 - **Date:** 2026-11-02
 - **Task:** M1.2
 
@@ -170,3 +170,4 @@ the notebook and carries only that execution's own figures:
 - **Open question for the owner (no change made):** `dedupe_s2` keeps the highest baseline, so a degraded higher-baseline item
   can replace a good one (the 2023-07-06 case above). Whether to prefer, for example, the item with the larger valid share, is
   a rule change to CLAUDE.md and ADR 0010 and is left to the owner.
+  **Owner decision (2026-11-03):** keep the highest-baseline rule unchanged.
