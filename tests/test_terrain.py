@@ -254,3 +254,104 @@ def test_parse_sun_grid_fixture() -> None:
         T.sun_angles_at(g, 1.0, 1.0)
     d = T.sun_grid_delta(g, [(489180.0, 758070.0), (499190.0, 748060.0)])
     assert d["spread_zen"] >= 0 and d["slope_equiv_deg"] >= d["d_zen_max"]
+
+
+# ---------------------------------------------------------------------------------------------
+# Aggregation
+# ---------------------------------------------------------------------------------------------
+
+
+def test_shadow_share_counts() -> None:
+    for n in range(0, 5):
+        valid = np.ones((max(n, 1), 1, 1), bool)
+        if n == 0:
+            valid[:] = False
+        for k in range(0, n + 1):
+            sh = np.zeros_like(valid)
+            sh[:k] = True
+            n_sh, share = T.shadow_share(valid, sh)
+            assert n_sh.dtype == np.uint16 and share.dtype == np.float32
+            if n == 0:
+                assert np.isnan(share).all() and n_sh[0, 0] == 0
+            else:
+                assert n_sh[0, 0] == k and share[0, 0] == pytest.approx(k / n)
+
+
+def test_shadow_ignores_invalid_observations() -> None:
+    valid = np.array([True, False, True, False]).reshape(4, 1, 1)
+    sh = np.array([True, True, False, True]).reshape(4, 1, 1)
+    n_sh, share = T.shadow_share(valid, sh)
+    assert n_sh[0, 0] == 1 and share[0, 0] == 0.5
+
+
+def test_flag_cut_at_even_n() -> None:
+    # n=2: 1 of 2 shadowed -> flagged (>= 0.5); n=3: 1 of 3 no, 2 of 3 yes; n=4: 2 of 4 yes.
+    share = np.array([1 / 2, 1 / 3, 2 / 3, 2 / 4, 0.0, np.nan], dtype=np.float32)
+    assert T.shadow_flag(share).tolist() == [True, False, True, True, False, False]
+
+
+def test_mean_min_over_valid() -> None:
+    valid = np.array([[[True]], [[False]], [[True]]])
+    x = np.array([[[0.5]], [[-1.0]], [[0.9]]], dtype=np.float32)
+    assert T.mean_over_valid(valid, x)[0, 0] == pytest.approx(0.7)
+    assert T.min_over_valid(valid, x)[0, 0] == pytest.approx(0.5)
+    none = np.zeros((2, 1, 1), bool)
+    assert (
+        np.isnan(T.mean_over_valid(none, x[:2])).all()
+        and np.isnan(T.min_over_valid(none, x[:2])).all()
+    )
+
+
+def test_to_fine_1001() -> None:
+    a = np.arange(334 * 334, dtype=np.float32).reshape(334, 334)
+    f = T.to_fine(a, 3, (1001, 1001))
+    assert f.shape == (1001, 1001)
+    assert f[0, 0] == f[2, 2] == a[0, 0] and f[3, 3] == a[1, 1] and f[1000, 1000] == a[333, 333]
+    assert T.to_fine(np.ones((2, 4, 4)), 3, (10, 11)).shape == (2, 10, 11)
+
+
+def test_composite_shadow_roundtrip(tmp_path: Path) -> None:
+    import rasterio
+
+    n_fine, nb = 30, 3
+    fine = GeoBox((n_fine, n_fine), Affine(10.0, 0, 489180.0, 0, -10.0, 758070.0), "EPSG:32644")
+    coarse = T.nested_geobox(fine, 3, buffer_m=nb * RES)
+    z = _half_plane(coarse.shape[0], coarse.shape[0] // 2 + 4, 120.0)
+    rng = np.random.default_rng(0)
+    valid = rng.random((3, n_fine, n_fine)) > 0.3
+    packed = np.packbits(valid, axis=-1)
+    npz = tmp_path / "s2_2020_SWM.npz"
+    np.savez_compressed(
+        npz,
+        packed=packed,
+        shape=np.array(valid.shape),
+        acq_ids=np.array(["a", "b", "c"]),
+        sun_azimuth_deg=np.array([90.0, 90.0, 270.0], np.float32),
+        sun_elevation_deg=np.array([30.0, 60.0, 30.0], np.float32),
+    )
+    inside = np.ones((n_fine, n_fine), bool)
+    inside[:, :2] = False
+    tif = T.composite_shadow(npz, z, nb, fine, inside, tmp_path / "out")
+    with rasterio.open(tif) as ds:
+        assert ds.count == 4 and ds.crs.to_epsg() == 32644 and ds.res == (10.0, 10.0)
+        assert ds.transform == fine.transform
+        assert list(ds.descriptions) == list(T.SHADOW_BANDS)
+        a = ds.read()
+    assert np.isnan(a[:, :, :2]).all()
+    n_obs = (valid & inside).sum(0)
+    assert np.array_equal(np.isnan(a[0]) & inside, (n_obs == 0) & inside)
+    assert np.nanmax(a[0]) <= 1.0 and np.nanmax(a[1]) <= 3
+    mtime = tif.stat().st_mtime_ns
+    assert T.composite_shadow(npz, z, nb, fine, inside, tmp_path / "out") == tif
+    assert tif.stat().st_mtime_ns == mtime  # resumed, not recomputed
+    T.composite_shadow(npz, z + 1.0, nb, fine, inside, tmp_path / "out")
+    assert tif.stat().st_mtime_ns != mtime  # DEM changed -> recomputed
+    with pytest.raises(ValueError):
+        T.composite_shadow(
+            npz,
+            z,
+            nb,
+            GeoBox((20, 20), fine.transform, "EPSG:32644"),
+            inside[:20, :20],
+            tmp_path / "o2",
+        )

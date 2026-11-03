@@ -8,9 +8,12 @@ UTM grid north is taken as true north (meridian convergence <= 0.012 deg across 
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import geopandas as gpd
@@ -361,3 +364,188 @@ def sun_grid_delta(
         "spread_zen": float(np.ptp(pts[:, 1])),
         "slope_equiv_deg": float(max(np.abs(d_zen).max(), np.abs(d_az).max() * sin_z)),
     }
+
+
+# --------------------------------------------------------------------------------------------
+# Aggregation per composite
+# --------------------------------------------------------------------------------------------
+
+
+def to_fine(a30: NDArray, factor: int = 3, shape: tuple[int, int] | None = None) -> NDArray:
+    """Replicate each coarse cell into a factor x factor block (last two axes), cropped to `shape`.
+
+    Exact when the grids nest (same top-left corner); no interpolation, so it is safe for flags.
+    """
+    out = np.repeat(np.repeat(a30, factor, axis=-2), factor, axis=-1)
+    if shape is not None:
+        out = out[..., : shape[0], : shape[1]]
+    return out
+
+
+def shadow_share(valid: Bool, shadow: Bool) -> tuple[NDArray[np.uint16], F32]:
+    """Return (n_shadow uint16, share float32 0-1) over axis 0 of (t, y, x) bool stacks.
+
+    n_shadow counts valid & shadowed observations; share = n_shadow / n_obs, NaN where n_obs = 0.
+    """
+    n_obs = valid.sum(axis=0, dtype=np.int32)
+    n_sh = (valid & shadow).sum(axis=0, dtype=np.int32)
+    share = np.full(n_obs.shape, np.nan, dtype=np.float32)
+    np.divide(n_sh, n_obs, out=share, where=n_obs > 0, casting="unsafe")
+    return n_sh.astype(np.uint16), share
+
+
+def shadow_flag(share: F32, cut: float = SHADOW_SHARE_CUT) -> Bool:
+    """Return True where at least `cut` (0-1, default 0.5) of the valid observations were shadowed.
+
+    NaN share (no valid observation) gives False. ADR 0016 (D6): at s >= n/2 the median takes
+    (or averages in) a shadowed value.
+    """
+    with np.errstate(invalid="ignore"):
+        return np.nan_to_num(share, nan=-1.0) >= cut
+
+
+def mean_over_valid(valid: Bool, x: F32) -> F32:
+    """Return the mean of x over valid observations (axis 0), NaN where there are none."""
+    n = valid.sum(axis=0)
+    tot = np.where(valid, x, 0.0).sum(axis=0, dtype=np.float64)
+    out = np.full(n.shape, np.nan, dtype=np.float32)
+    np.divide(tot, n, out=out, where=n > 0, casting="unsafe")
+    return out
+
+
+def min_over_valid(valid: Bool, x: F32) -> F32:
+    """Return the minimum of x over valid observations (axis 0), NaN where there are none."""
+    out = np.where(valid, x, np.inf).min(axis=0).astype(np.float32)
+    out[~valid.any(axis=0)] = np.nan
+    return out
+
+
+SHADOW_BANDS = ("shadow_share", "n_shadow", "cos_i_mean", "cos_i_min")
+
+
+def load_clear_masks(path: str | Path) -> dict[str, Any]:
+    """Load an M1.2 clear-mask npz: bool 'valid' (t, y, x), 'acq_ids', sun 'az'/'elev' (deg)."""
+    z = np.load(path)
+    shape = tuple(int(v) for v in z["shape"])
+    valid = np.unpackbits(z["packed"], axis=-1, count=shape[-1]).astype(bool)
+    return {
+        "valid": valid,
+        "acq_ids": [str(a) for a in z["acq_ids"]],
+        "az": z["sun_azimuth_deg"].astype(np.float64),
+        "elev": z["sun_elevation_deg"].astype(np.float64),
+    }
+
+
+def _sha256_file(path: str | Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def composite_shadow(
+    npz_path: str | Path,
+    dem_buf: NDArray[np.floating],
+    buf_cells: int,
+    fine: GeoBox,
+    inside: Bool,
+    out_dir: str | Path,
+    step_frac: float = 0.5,
+    res: float = TERRAIN_RES_M,
+    force: bool = False,
+) -> Path:
+    """Write <stem>_shadow.tif (4 float32 bands, 10 m) and <stem>_shadow.json for one window-year.
+
+    Bands: shadow_share (0-1), n_shadow (count), cos_i_mean, cos_i_min ([-1, 1]), each over the
+    window's valid observations, NaN where there is none or outside the AOI. Shadow is computed
+    per scene from that scene's own sun angles (deg) in the npz, then aggregated. Resumable: skipped
+    when the JSON records the same npz sha256, DEM sha256 and parameters.
+    """
+    from highland.io import write_cog
+
+    npz_path, out_dir = Path(npz_path), Path(out_dir)
+    stem = npz_path.stem
+    tif, meta = out_dir / f"{stem}_shadow.tif", out_dir / f"{stem}_shadow.json"
+    params = {
+        "schema": 1,
+        "npz_sha256": _sha256_file(npz_path),
+        "dem_sha256": hashlib.sha256(
+            np.ascontiguousarray(dem_buf, np.float32).tobytes()
+        ).hexdigest(),
+        "buf_cells": buf_cells,
+        "step_frac": step_frac,
+        "res": res,
+        "z_cap": HIGHEST_POINT_M,
+        "shape": list(fine.shape),
+    }
+    if not force and tif.exists() and meta.exists():
+        if json.loads(meta.read_text()).get("params") == params:
+            return tif
+    m = load_clear_masks(npz_path)
+    valid = m["valid"]
+    if valid.shape[1:] != tuple(fine.shape):
+        raise ValueError(f"mask shape {valid.shape[1:]} differs from the grid {tuple(fine.shape)}.")
+    nt = valid.shape[0]
+    shadow = np.zeros(valid.shape, dtype=bool)
+    cos_i = np.zeros(valid.shape, dtype=np.float32)
+    scenes = []
+    n_inside = int(inside.sum())
+    for t in range(nt):
+        sc = scene_shadow(
+            dem_buf, res, float(m["az"][t]), float(m["elev"][t]), buf_cells, step_frac
+        )
+        shape = tuple(fine.shape)
+        f = {k: to_fine(sc[k], 3, shape) for k in ("self", "cast", "any", "cos_i")}
+        shadow[t], cos_i[t] = f["any"], f["cos_i"]
+        v = valid[t] & inside
+        scenes.append(
+            {
+                "acq_id": m["acq_ids"][t],
+                "sun_azimuth_deg": float(m["az"][t]),
+                "sun_elevation_deg": float(m["elev"][t]),
+                "share_self": float((f["self"] & inside).sum() / n_inside),
+                "share_cast": float((f["cast"] & inside).sum() / n_inside),
+                "share_any": float((f["any"] & inside).sum() / n_inside),
+                "n_valid": int(v.sum()),
+                "valid_shadowed_share": float((v & f["any"]).sum() / v.sum()) if v.any() else None,
+            }
+        )
+    valid &= inside
+    n_sh, share = shadow_share(valid, shadow)
+    bands = np.stack(
+        [
+            share,
+            n_sh.astype(np.float32),
+            mean_over_valid(valid, cos_i),
+            min_over_valid(valid, cos_i),
+        ]
+    ).astype(np.float32)
+    bands[:, ~inside] = np.nan
+    write_cog(
+        bands,
+        tif,
+        fine.transform,
+        "EPSG:32644",
+        np.nan,
+        descriptions=list(SHADOW_BANDS),
+        tags={
+            "terrain_flag": "per-scene self+cast shadow, share of valid obs (ADR 0016)",
+            "source_masks": npz_path.name,
+            "npz_sha256": params["npz_sha256"],
+        },
+    )
+    flagged = shadow_flag(share) & inside
+    meta.write_text(
+        json.dumps(
+            {
+                "params": params,
+                "n_scenes": nt,
+                "share_flag_ge_half": float(flagged.sum() / n_inside),
+                "share_any_shadow": float(((n_sh > 0) & inside).sum() / n_inside),
+                "scenes": scenes,
+            },
+            indent=1,
+        )
+    )
+    return tif
