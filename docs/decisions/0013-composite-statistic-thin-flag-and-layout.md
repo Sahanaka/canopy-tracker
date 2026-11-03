@@ -43,7 +43,7 @@ every NDVI and EVI band. Only `s2_2026_SWM_indices.tif` and `s2_2026_SWM_reflect
 2026-09-08 scene has 20 % no-data, 576 NDMI, 677 NBR, 631 nir08, 1020 swir16 and 858 swir22 pixels (each at most 0.1 % of the
 AOI) changed value, with no pixel changing between NaN and finite. The largest differences are 0.093 (NDMI), 0.135 (NBR) and
 0.030 / 0.027 / 0.017 (nir08 / swir16 / swir22 reflectance); medians 0.003, 0.005 and about 0.0025. The composite summary moved
-only in the fourth decimal (SWM 2026 NDMI median 0.24341 to 0.24340, NBR median 0.49700 to 0.49699). The corrected files
+only in the fourth decimal (SWM 2026 NDMI median 0.24341 to 0.24340, NBR median by less than 0.00001, now 0.496999). The corrected files
 replaced the first ones; no other number in this ADR changed. `scl_share_0` in `scenes_used.csv` now reports class 0 correctly
 (for 2026-09-08 it is 0.203 instead of 0).
 
@@ -133,7 +133,8 @@ own item ids and its parameters in `meta/` and in the GeoTIFF tags, and is recom
 
 ## Measured cost (one sandbox, 4 cores, Planetary Computer over the network, 4 dask threads)
 
-Three different runs, kept apart (the README in `outputs/M1.2` labels them the same way):
+Three different runs, kept apart. The scripted figures are recorded only here; the README in `outputs/M1.2` is rewritten by
+the notebook and carries only that execution's own figures:
 
 - **Scripted pilot, cold:** SIM 2023 (12 scenes) 58 s, peak RSS 1.2 GB; SWM 2023 (30 scenes) 132 s, peak RSS 2.6 GB.
 - **Scripted full run, cold:** 43 window-years, 691 acquisitions, 2970 s (49.5 min), peak RSS 3.4 GB (SWM 2025, 39 scenes).
