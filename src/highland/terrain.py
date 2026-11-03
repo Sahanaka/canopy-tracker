@@ -281,13 +281,15 @@ def scene_shadow(
     step_frac: float = 0.5,
     z_cap: float | None = HIGHEST_POINT_M,
     check_buffer: bool = True,
+    z_min: float | None = None,
 ) -> dict[str, NDArray]:
     """Return the AOI-grid shadow masks and cos i for one sun position (cells cropped by buf_cells).
 
     Keys: 'self' (cos i <= 0), 'cast' (horizon above the sun), 'any' (union), all bool, and
     'cos_i' float32 in [-1, 1]. `dem_buf` is the buffered DEM in m; az 0-360, elev 0-90 deg.
     Raises if the buffer is too narrow for this elevation: horizon_buffer_m(z_min of the AOI
-    cells, elev, z_cap) must not exceed buf_cells * res (z_cap=None: the DEM maximum is used);
+    cells or `z_min` (m, e.g. the minimum inside the AOI polygon, which can be higher than the
+    bounding box's), elev, z_cap) must not exceed buf_cells * res (z_cap=None: the DEM maximum);
     check_buffer=False disables this, for synthetic geometry tests only.
     """
     ny, nx = dem_buf.shape
@@ -296,7 +298,8 @@ def scene_shadow(
         raise ValueError("buf_cells must be >= 1 (the Horn ring must stay outside the AOI).")
     inner = (slice(b, ny - b), slice(b, nx - b))
     z_top = float(np.nanmax(dem_buf)) if z_cap is None else z_cap
-    need = horizon_buffer_m(float(np.nanmin(dem_buf[inner])), elev_deg, z_top)
+    z_lo = float(np.nanmin(dem_buf[inner])) if z_min is None else z_min
+    need = horizon_buffer_m(z_lo, elev_deg, z_top)
     if check_buffer and need > b * res:
         raise ValueError(
             f"DEM buffer {b * res:g} m is narrower than the {need:.0f} m needed at sun elevation "
@@ -467,6 +470,7 @@ def composite_shadow(
     force: bool = False,
     z_cap: float | None = HIGHEST_POINT_M,
     check_buffer: bool = True,
+    z_min: float | None = None,
 ) -> Path:
     """Write <stem>_shadow.tif (4 float32 bands, 10 m) and <stem>_shadow.json for one window-year.
 
@@ -514,6 +518,7 @@ def composite_shadow(
             step_frac,
             z_cap,
             check_buffer,
+            z_min,
         )
         shape = tuple(fine.shape)
         f = {k: to_fine(sc[k], 3, shape) for k in ("self", "cast", "any", "cos_i")}

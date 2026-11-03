@@ -433,7 +433,7 @@ def run_all(
     per_window = {}
     for npz in masks:
         t1 = time.time()
-        T.composite_shadow(npz, z, nb, fine, inside, out, force=force)
+        T.composite_shadow(npz, z, nb, fine, inside, out, force=force, z_min=z_min_buf)
         per_window[npz.stem] = round(time.time() - t1, 2)
         log.info("%s done in %.1fs (rss %.0f MB)", npz.stem, per_window[npz.stem], _rss_mb())
     timings["per_window_seconds"] = per_window
@@ -532,6 +532,7 @@ def run_diagnostics(
     )
     if (tr_buf.c, tr_buf.f) != (box30.transform.c - nb * 30, box30.transform.f + nb * 30):
         raise RuntimeError("dem_30m_buffer.tif is not nested in the M1.2 grid.")
+    z_min_poly = float(z[nb:-nb, nb:-nb][aoi_inside_mask(aoi, box30)].min())
     rows_out = []
     gb20 = None
     todo = scenes[scenes["scl_share_2"] > 0] if run_scl2 else scenes.iloc[0:0]
@@ -548,7 +549,12 @@ def run_diagnostics(
             ins20 = aoi_inside_mask(aoi, gb20)
             ri, ci = coarse_index(box30, gb20)
         sh = T.scene_shadow(
-            z, 30.0, float(sc["sun_azimuth_deg"]), float(sc["sun_elevation_deg"]), nb
+            z,
+            30.0,
+            float(sc["sun_azimuth_deg"]),
+            float(sc["sun_elevation_deg"]),
+            nb,
+            z_min=z_min_poly,
         )
         model20 = sample_coarse(sh["any"], ri, ci)
         cos20 = sample_coarse(sh["cos_i"], ri, ci)
