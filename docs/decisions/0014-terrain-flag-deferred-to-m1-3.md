@@ -34,3 +34,15 @@ aggregated over. Applying one sun angle to a multi-date composite is not allowed
   at 10 m on the M1.2 grid. Changing the grid, the AOI or the SCL keep-set invalidates them (resume keys catch this).
 - Revisit if M1.3 finds it needs per-scene reflectance (for example a band-ratio illumination correction): that would
   require rereading imagery, and the composites would have to be rerun.
+
+## Amendment (M1.3, 2026-11-03)
+
+The original text above is unchanged. One correction, one confirmation and one link.
+
+- **What the stored masks are.** The "Consequences" line calls them "SCL clear, all bands non-zero". More exactly: a pixel is a valid observation when its SCL class is in the ADR 0012 keep-set {2, 4, 5, 6}
+  and all seven reflectance bands are non-zero. For the 20 m bands the non-zero test is valid only because source nodata 0 is forced for every asset (ADR 0013); ADR 0013 shows that the 43 mask files were byte-identical after that fix.
+  Class 2 is therefore inside the valid set, so shaded observations are in the denominator of the M1.3 shadow share.
+- **Size.** The "about 50-100 kB per window-year" estimate holds: the 43 `clear_masks/*.npz` total 2.8 MB, about 65 kB each.
+- **Implemented.** M1.3 computed the flag from these stored masks and angles without rereading any imagery; the angles are the tile means from `scenes_used.csv` (checked against the MTD_TL grids, ADR 0016). The SCL class 2 statement in "Decision" stays true:
+  class 2 was kept as clear, and ADR 0016 reports how it relates to the modelled shadow. See ADR 0015 (DEM, grid, derivatives) and ADR 0016 (flag).
+
