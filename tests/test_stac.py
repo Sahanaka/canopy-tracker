@@ -208,3 +208,65 @@ def test_item_table_columns_and_cover() -> None:
     assert t["tile"].iloc[0] == "44NMN"
     assert t["aoi_cover_frac"].iloc[0] == pytest.approx(0.5, abs=0.01)
     assert item_table([_s2()])["aoi_cover_frac"].isna().all()
+
+
+def test_aoi_geobox_10m_from_b02_nests_with_20m_grid() -> None:
+    aoi_utm = gpd.GeoDataFrame(
+        geometry=[box(500010.0, 700010.0, 500100.0, 700100.0)], crs="EPSG:32644"
+    )
+    it = _grid_item(399960.0, 800040.0, "B02", 10.0)
+    gb10 = aoi_geobox(aoi_utm.to_crs("EPSG:4326"), [it], "s2", asset="B02", resolution=10.0)
+    assert gb10.transform.a == 10.0 and gb10.transform.e == -10.0
+    assert (gb10.transform.c - 399960.0) % 10 == pytest.approx(0, abs=1e-6)
+    it20 = _grid_item(399960.0, 800040.0, "SCL", 20.0)
+    gb20 = aoi_geobox(aoi_utm.to_crs("EPSG:4326"), [it20], "s2")
+    # The 10 m box covers the 20 m box (same origin, both snapped outward).
+    assert gb10.boundingbox.left <= gb20.boundingbox.left + 1e-6
+    assert gb10.boundingbox.right >= gb10.boundingbox.left + 80
+
+
+def test_aoi_geobox_default_still_rejects_10m_scl() -> None:
+    aoi = gpd.GeoDataFrame(geometry=[box(500010.0, 700010.0, 500100.0, 700100.0)], crs="EPSG:32644")
+    it = _grid_item(399960.0, 800040.0, "B02", 10.0)
+    with pytest.raises(ValueError, match="refusing to resample"):
+        aoi_geobox(aoi.to_crs("EPSG:4326"), [it], "s2", asset="B02")  # 10 m vs default 20 m
+
+
+def test_s2_band_map_and_resolution_split() -> None:
+    from highland.stac import S2_BANDS, S2_NATIVE_10M
+
+    assert S2_BANDS["nir"] == "B08" and S2_BANDS["nir08"] == "B8A"
+    assert S2_BANDS["swir16"] == "B11" and S2_BANDS["swir22"] == "B12"
+    assert S2_NATIVE_10M == {"B02", "B03", "B04", "B08"}
+
+
+def test_load_s2_acquisition_rejects_mixed_baseline_and_unknown_band() -> None:
+    from highland.stac import load_s2_acquisition
+
+    a, b = _s2(baseline="04.00"), _s2(baseline="05.10", proc="20240805T215618")
+    with pytest.raises(ValueError, match="differ in processing baseline"):
+        load_s2_acquisition([a, b], None)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="Unknown S2 bands"):
+        load_s2_acquisition([a], None, bands=["B04"])  # type: ignore[arg-type]
+
+
+def test_src_nodata_zero_reader_overrides_and_driver_wraps() -> None:
+    """The reader wrapper forces src_nodata_override=0; the driver returns the wrapper."""
+    from odc.loader import RasterLoadParams
+
+    from highland.stac import _s2_reader_driver, _SrcNodataZeroReader
+
+    seen = {}
+
+    class _Inner:
+        def read(self, cfg, dst_geobox, **kw):  # type: ignore[no-untyped-def]
+            seen["cfg"], seen["gbox"], seen["kw"] = cfg, dst_geobox, kw
+            return "ok"
+
+    cfg = RasterLoadParams(dtype="uint16", fill_value=0, resampling="bilinear")
+    assert cfg.src_nodata_override is None
+    out = _SrcNodataZeroReader(_Inner()).read(cfg, "gbox", selection=None)
+    assert out == "ok" and seen["cfg"].src_nodata_override == 0
+    assert seen["cfg"].resampling == "bilinear" and seen["gbox"] == "gbox"
+    assert seen["kw"] == {"selection": None}
+    assert hasattr(_s2_reader_driver(), "open")

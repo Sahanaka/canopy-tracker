@@ -1,6 +1,6 @@
 # 0010 — Availability audit: definitions and measured counts
 
-- **Status:** proposed — awaiting owner acceptance
+- **Status:** accepted by the owner on 2026-11-02
 - **Date:** 2026-11-02
 - **Task:** M1.1
 
