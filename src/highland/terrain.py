@@ -9,6 +9,9 @@ UTM grid north is taken as true north (meridian convergence <= 0.012 deg across 
 from __future__ import annotations
 
 import math
+import xml.etree.ElementTree as ET
+from collections.abc import Sequence
+from typing import Any
 
 import geopandas as gpd
 import numpy as np
@@ -185,3 +188,176 @@ def terrain_stack(dem: NDArray[np.floating], res: float = TERRAIN_RES_M) -> F32:
     slope = slope_deg(dem, res)
     hs[np.isnan(slope)] = np.nan
     return np.stack([np.asarray(dem, np.float32), slope, aspect_deg(dem, res), hs])
+
+
+# --------------------------------------------------------------------------------------------
+# Cast shadow (horizon-angle ray march) and per-scene shadow
+# --------------------------------------------------------------------------------------------
+
+
+def horizon_buffer_m(
+    z_min_aoi: float, elev_min_deg: float, z_max_bound: float = HIGHEST_POINT_M
+) -> float:
+    """Return the DEM buffer width in m: (z_max_bound - z_min_aoi) / tan(elev_min).
+
+    Heights in m, elev_min_deg in (0, 90).
+
+    Terrain farther than this from the AOI cannot shade it at any sun elevation >= elev_min.
+    """
+    if not 0 < elev_min_deg < 90:
+        raise ValueError("elev_min_deg must be in (0, 90).")
+    return max(z_max_bound - z_min_aoi, 0.0) / math.tan(math.radians(elev_min_deg))
+
+
+def _bilinear(z: NDArray[np.float64], r: NDArray[np.float64], c: NDArray[np.float64]) -> NDArray:
+    """Sample z at fractional (row, col) positions that lie inside the array."""
+    r0 = np.minimum(np.floor(r).astype(np.intp), z.shape[0] - 2)
+    c0 = np.minimum(np.floor(c).astype(np.intp), z.shape[1] - 2)
+    fr, fc = r - r0, c - c0
+    return (
+        z[r0, c0] * (1 - fr) * (1 - fc)
+        + z[r0, c0 + 1] * (1 - fr) * fc
+        + z[r0 + 1, c0] * fr * (1 - fc)
+        + z[r0 + 1, c0 + 1] * fr * fc
+    )
+
+
+def cast_shadow(
+    dem_buf: NDArray[np.floating],
+    res: float,
+    az_deg: float,
+    elev_deg: float,
+    out_slice: tuple[slice, slice] | None = None,
+    step_frac: float = 0.5,
+    z_cap: float | None = None,
+) -> Bool:
+    """Return True where terrain between a cell and the sun rises above the sun's elevation angle.
+
+    Brute-force horizon-angle march (Dozier & Frew 1990) from each target cell towards the sun
+    in steps of step_frac * res (m), bilinear on the buffered DEM (m); samples beyond the array
+    are ignored (no wrap). The march stops where it passes z_cap (m), the highest possible
+    terrain; z_cap=None marches to the array edge. Targets are `out_slice` of the array.
+    """
+    if not 0 < step_frac <= 1:
+        raise ValueError("step_frac must be in (0, 1].")
+    z = np.asarray(dem_buf, dtype=np.float64)
+    ny, nx = z.shape
+    sl = out_slice or (slice(0, ny), slice(0, nx))
+    rr, cc = np.mgrid[sl]
+    out_shape = rr.shape
+    rr, cc = rr.ravel().astype(np.float64), cc.ravel().astype(np.float64)
+    z0 = z[rr.astype(np.intp), cc.astype(np.intp)]
+    tan_e = math.tan(math.radians(elev_deg))
+    ex, ny_ = math.sin(math.radians(az_deg)), math.cos(math.radians(az_deg))
+    far = math.hypot(ny, nx) * res
+    d_lim = np.full(z0.shape, far) if z_cap is None else np.clip((z_cap - z0) / tan_e, 0.0, far)
+    best = np.full(z0.shape, -np.inf)
+    step = step_frac * res
+    for k in range(1, int(math.ceil(d_lim.max() / step)) + 1):
+        d = k * step
+        r, c = rr - ny_ * d / res, cc + ex * d / res
+        ok = (d <= d_lim) & (r >= 0) & (r <= ny - 1) & (c >= 0) & (c <= nx - 1)
+        idx = np.flatnonzero(ok)
+        if idx.size == 0:
+            if not (d <= d_lim).any():
+                break
+            continue
+        zs = _bilinear(z, r[idx], c[idx])
+        ratio = (zs - z0[idx]) / d
+        ratio = np.where(np.isfinite(ratio), ratio, -np.inf)
+        best[idx] = np.maximum(best[idx], ratio)
+    return (best > tan_e).reshape(out_shape)
+
+
+def scene_shadow(
+    dem_buf: NDArray[np.floating],
+    res: float,
+    az_deg: float,
+    elev_deg: float,
+    buf_cells: int,
+    step_frac: float = 0.5,
+    z_cap: float | None = HIGHEST_POINT_M,
+) -> dict[str, NDArray]:
+    """Return the AOI-grid shadow masks and cos i for one sun position (cells cropped by buf_cells).
+
+    Keys: 'self' (cos i <= 0), 'cast' (horizon above the sun), 'any' (union), all bool, and
+    'cos_i' float32 in [-1, 1]. `dem_buf` is the buffered DEM in m; az 0-360, elev 0-90 deg.
+    """
+    ny, nx = dem_buf.shape
+    b = buf_cells
+    if b < 1:
+        raise ValueError("buf_cells must be >= 1 (the Horn ring must stay outside the AOI).")
+    inner = (slice(b, ny - b), slice(b, nx - b))
+    cos_i = cos_incidence(dem_buf, res, az_deg, elev_deg)[inner]
+    self_sh = cos_i <= 0
+    cast = cast_shadow(dem_buf, res, az_deg, elev_deg, inner, step_frac, z_cap)
+    return {"self": self_sh, "cast": cast, "any": self_sh | cast, "cos_i": cos_i}
+
+
+# --------------------------------------------------------------------------------------------
+# Sentinel-2 MTD_TL sun-angle grid (D5 check)
+# --------------------------------------------------------------------------------------------
+
+
+def _grid_values(el: ET.Element) -> NDArray[np.float64]:
+    rows = [[float(v) for v in r.text.split()] for r in el.iter("VALUES") if r.text]
+    return np.asarray(rows, dtype=np.float64)
+
+
+def parse_sun_grid(xml: bytes | str) -> dict[str, Any]:
+    """Parse a Sentinel-2 MTD_TL.xml into the 5 km sun-angle grids (deg) and tile geocoding (m).
+
+    Returns ulx, uly (tile 10 m grid corner, EPSG code in 'crs'), step (m), 'zenith' and
+    'azimuth' (rows x cols, row 0 at uly), and the tile-mean angles 'mean_zenith'/'mean_azimuth'.
+    """
+    root = ET.fromstring(xml)
+    for el in root.iter():  # drop XML namespaces so that tags can be matched by name
+        el.tag = el.tag.rsplit("}", 1)[-1]
+    sun = next(root.iter("Sun_Angles_Grid"))
+    zen = sun.find("Zenith")
+    azi = sun.find("Azimuth")
+    mean = next(root.iter("Mean_Sun_Angle"))
+    geo = next(g for g in root.iter("Geoposition") if g.get("resolution") == "10")
+    step = float(zen.find("COL_STEP").text)  # type: ignore[union-attr,arg-type]
+    return {
+        "crs": next(root.iter("HORIZONTAL_CS_CODE")).text,
+        "ulx": float(geo.find("ULX").text),  # type: ignore[union-attr,arg-type]
+        "uly": float(geo.find("ULY").text),  # type: ignore[union-attr,arg-type]
+        "step": step,
+        "zenith": _grid_values(zen),  # type: ignore[arg-type]
+        "azimuth": _grid_values(azi),  # type: ignore[arg-type]
+        "mean_zenith": float(mean.find("ZENITH_ANGLE").text),  # type: ignore[union-attr,arg-type]
+        "mean_azimuth": float(mean.find("AZIMUTH_ANGLE").text),  # type: ignore[union-attr,arg-type]
+    }
+
+
+def sun_angles_at(grid: dict[str, Any], x: float, y: float) -> tuple[float, float]:
+    """Return (azimuth, zenith) in deg, bilinear at UTM (x, y) in m inside the grid."""
+    col = (x - grid["ulx"]) / grid["step"]
+    row = (grid["uly"] - y) / grid["step"]
+    zen = grid["zenith"]
+    if not (0 <= row <= zen.shape[0] - 1 and 0 <= col <= zen.shape[1] - 1):
+        raise ValueError("Point is outside the sun-angle grid.")
+    r, c = np.array([row]), np.array([col])
+    return float(_bilinear(grid["azimuth"], r, c)[0]), float(_bilinear(zen, r, c)[0])
+
+
+def sun_grid_delta(
+    grid: dict[str, Any], points_xy: Sequence[tuple[float, float]]
+) -> dict[str, float]:
+    """Return tile-mean vs AOI-point sun-angle differences (deg) over several UTM points (m).
+
+    Keys: d_az_max, d_zen_max (max |point - tile mean|), spread_az, spread_zen (max - min across
+    the points, i.e. the variation within the AOI), and slope_equiv_deg = max(|dz|, |daz| sin z).
+    """
+    pts = np.array([sun_angles_at(grid, x, y) for x, y in points_xy])
+    d_az = pts[:, 0] - grid["mean_azimuth"]
+    d_zen = pts[:, 1] - grid["mean_zenith"]
+    sin_z = math.sin(math.radians(grid["mean_zenith"]))
+    return {
+        "d_az_max": float(np.abs(d_az).max()),
+        "d_zen_max": float(np.abs(d_zen).max()),
+        "spread_az": float(np.ptp(pts[:, 0])),
+        "spread_zen": float(np.ptp(pts[:, 1])),
+        "slope_equiv_deg": float(max(np.abs(d_zen).max(), np.abs(d_az).max() * sin_z)),
+    }

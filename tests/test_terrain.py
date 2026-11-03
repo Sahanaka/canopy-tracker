@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from affine import Affine
@@ -79,7 +81,7 @@ def test_cos_incidence_cases() -> None:
     # Flat: sin(elev).
     flat = T.cos_incidence(np.full((5, 5), 10.0), RES, 77.0, 52.4)
     assert np.allclose(flat[1:-1, 1:-1], np.sin(np.radians(52.4)), atol=1e-6)
-    # Facing directly away: cos i = cos(zenith + slope) < 0 once slope > elevation (not 90 - elev).
+    # Facing directly away: cos i = cos(zenith + slope) < 0 once slope > elevation.
     el = 55.0
     t = np.tan(np.radians(el + 1))
     p, q = t * np.sin(np.radians(45)), t * np.cos(np.radians(45))  # descends to az 225, sun at 45
@@ -133,3 +135,122 @@ def test_nested_geobox_corners() -> None:
     assert T.buffer_cells(1130.0) == 38
     with pytest.raises(ValueError):
         T.nested_geobox(fine, buffer_m=-1)
+
+
+# ---------------------------------------------------------------------------------------------
+# Shadow
+# ---------------------------------------------------------------------------------------------
+
+
+def _half_plane(n: int, x0: int, height: float, east: bool = True) -> np.ndarray:
+    z = np.zeros((n, n))
+    if east:
+        z[:, x0:] = height
+    else:
+        z[:, : x0 + 1] = height
+    return z
+
+
+@pytest.mark.parametrize("az", [90.0, 135.0])
+def test_cast_shadow_length_east_wall(az: float) -> None:
+    n, x0, h, el = 120, 80, 100.0, 40.0
+    z = _half_plane(n, x0, h)
+    sh = T.cast_shadow(z, RES, az, el)
+    length = h / np.tan(np.radians(el))  # along the sun direction
+    # the edge is hit after dx / sin(az); the shadow reaches length * sin(az) west of it
+    expected_cells = length * np.sin(np.radians(az)) / RES
+    row = sh[60]
+    cols = np.flatnonzero(row[:x0])
+    assert cols.size > 0
+    extent = x0 - cols.min()
+    assert abs(extent - expected_cells) <= 1.0 + 0.5  # one cell for the bilinear ramp + one step
+    assert not row[x0:].any()  # the plateau itself is not shaded
+
+
+def test_cast_shadow_west_wall() -> None:
+    n, x0, h, el = 120, 40, 90.0, 35.0
+    z = _half_plane(n, x0, h, east=False)
+    sh = T.cast_shadow(z, RES, 270.0, el)
+    expected = h / np.tan(np.radians(el)) / RES
+    cols = np.flatnonzero(sh[60, x0 + 1 :])
+    assert abs((cols.max() + 1) - expected) <= 1.5
+
+
+def test_cast_shadow_high_sun_none_and_no_wrap() -> None:
+    z = _half_plane(60, 40, 100.0)
+    assert not T.cast_shadow(z, RES, 90.0, 89.9).any()
+    # A tall column at the west edge must not shade the east edge when the sun is in the east.
+    z = np.zeros((20, 20))
+    z[:, 0] = 5000.0
+    sh = T.cast_shadow(z, RES, 90.0, 20.0)
+    assert not sh[:, -3:].any()
+    # ...but it does shade the cells just east of it when the sun is in the west.
+    assert T.cast_shadow(z, RES, 270.0, 20.0)[10, 1]
+
+
+def test_cast_shadow_zcap_matches_uncapped() -> None:
+    rng = np.random.default_rng(3)
+    z = np.cumsum(np.cumsum(rng.normal(0, 4, (80, 80)), 0), 1)
+    z -= z.min()
+    inner = (slice(20, 60), slice(20, 60))
+    a = T.cast_shadow(z, RES, 120.0, 25.0, inner, z_cap=float(z.max()))
+    b = T.cast_shadow(z, RES, 120.0, 25.0, inner, z_cap=None)
+    assert a.shape == (40, 40) and np.array_equal(a, b)
+
+
+def test_cast_shadow_step_converges() -> None:
+    n, x0, h, el = 120, 80, 100.0, 40.0
+    z = _half_plane(n, x0, h)
+    a = T.cast_shadow(z, RES, 90.0, el, step_frac=1.0).sum()
+    b = T.cast_shadow(z, RES, 90.0, el, step_frac=0.25).sum()
+    assert abs(int(a) - int(b)) <= n  # at most one column of 120 cells
+
+
+def test_horizon_buffer() -> None:
+    assert T.horizon_buffer_m(1044.0, 52.4, 2527.0) == pytest.approx(
+        (2527.0 - 1044.0) / np.tan(np.radians(52.4))
+    )
+    assert T.horizon_buffer_m(3000.0, 50.0) == 0.0
+    with pytest.raises(ValueError):
+        T.horizon_buffer_m(0.0, 0.0)
+
+
+def test_scene_shadow_keys_and_crop() -> None:
+    z = _half_plane(60, 40, 100.0)
+    out = T.scene_shadow(z, RES, 90.0, 40.0, buf_cells=5)
+    assert out["any"].shape == (50, 50) and out["cos_i"].dtype == np.float32
+    assert np.array_equal(out["any"], out["self"] | out["cast"])
+    assert out["cast"].any()
+    with pytest.raises(ValueError):
+        T.scene_shadow(z, RES, 90.0, 40.0, buf_cells=0)
+
+
+def test_scene_shadow_self_on_steep_slope() -> None:
+    t = np.tan(np.radians(60.0))  # 60 deg slope descending to the west, sun in the east at 50 deg
+    z = plane(t, 0.0, shape=(20, 20))  # rises to the east: faces west, away from an eastern sun
+    out = T.scene_shadow(z, RES, 90.0, 50.0, buf_cells=2)
+    assert out["self"].all()
+
+
+# ---------------------------------------------------------------------------------------------
+# MTD_TL
+# ---------------------------------------------------------------------------------------------
+
+FIXTURE = Path(__file__).parent / "fixtures" / "terrain" / "MTD_TL_44NMN_20230601.xml"
+
+
+def test_parse_sun_grid_fixture() -> None:
+    g = T.parse_sun_grid(FIXTURE.read_bytes())
+    assert g["crs"] == "EPSG:32644" and (g["ulx"], g["uly"], g["step"]) == (399960, 800040, 5000)
+    assert g["zenith"].shape == g["azimuth"].shape == (23, 23)
+    assert g["mean_zenith"] == pytest.approx(26.2283670328994)
+    # the AOI centre is close to the tile mean (within the grid's total spread)
+    az, zen = T.sun_angles_at(g, 494185.0, 753065.0)
+    assert abs(zen - g["mean_zenith"]) < 1.0 and abs(az - g["mean_azimuth"]) < 2.0
+    # at a node, interpolation returns the node value
+    az0, zen0 = T.sun_angles_at(g, 399960 + 5000 * 3, 800040 - 5000 * 2)
+    assert zen0 == pytest.approx(g["zenith"][2, 3]) and az0 == pytest.approx(g["azimuth"][2, 3])
+    with pytest.raises(ValueError):
+        T.sun_angles_at(g, 1.0, 1.0)
+    d = T.sun_grid_delta(g, [(489180.0, 758070.0), (499190.0, 748060.0)])
+    assert d["spread_zen"] >= 0 and d["slope_equiv_deg"] >= d["d_zen_max"]
