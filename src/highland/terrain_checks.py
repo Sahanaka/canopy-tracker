@@ -767,6 +767,8 @@ def lake_alignment(
         ri, ci = coarse_index(box30, tgt)
         masks = {k: sample_coarse(lk[k], ri, ci) for k in ("lake", "flat")}
         arrays[f"freq20_lake{li}"] = freq20
+        arrays[f"mask10_lake{li}"] = masks["lake"]
+        arrays[f"flat10_lake{li}"] = masks["flat"]
         arrays[f"water_lake{li}"] = water
         arrays[f"clear_lake{li}"] = clear
         f10 = np.repeat(np.repeat(np.nan_to_num(freq20, nan=0.0), 2, 0), 2, 1)
