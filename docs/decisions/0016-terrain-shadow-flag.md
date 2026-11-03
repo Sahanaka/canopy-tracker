@@ -37,7 +37,7 @@ For a facet facing directly away from the sun, cos i = cos(zenith + slope) <= 0 
 
 ## Results
 
-- **The geometric flag is almost empty in this AOI.** Self-shadow: 0 cells in all 691 scenes (the minimum cos i of any valid observation in any composite is 0.047: no facet faces away from the sun), although 0.040 % of 30 m cells have a slope above 52.38 degrees.
+- **The geometric flag is almost empty in this AOI, for Sentinel-2's roughly 10:30 local overpass.** (It is a property of that sun geometry, elevation 52.38 to 69.52 degrees; it does not carry over to lower sun, see Consequences.) Self-shadow: 0 cells in all 691 scenes (the minimum cos i of any valid observation in any composite is 0.047: no facet faces away from the sun), although 0.040 % of 30 m cells have a slope above 52.38 degrees.
   Cast shadow: 82 of 691 scenes show any (all in the NEM window, sun elevation 52.38 to 54.41 degrees, azimuth 138.3 to 146.9 degrees); the largest AOI share in any scene is 1.8e-5 (2 cells of 30 m).
   Valid observations shadowed in a scene: at most 6.5e-5.
 - Per composite: `shadow_share >= 0.5` flags 9e-6 of the AOI (one 30 m cell, 9 pixels) in 4 of 43 window-years (NEM 2017, 2018, 2019, 2024) and nothing elsewhere; "any shadowed observation" is non-zero in 10 window-years, all NEM
@@ -48,21 +48,41 @@ For a facet facing directly away from the sun, cos i = cos(zenith + slope) <= 0 
   keeping only pixels with no shadowed observation, 3e-6. Sensitivity rows that drop the least-lit 10 % / 25 % of AOI pixels per window (not proposed as cuts) change medians by at most 0.0097 / 0.019 (NBR),
   0.0085 / 0.018 (NDVI), 0.0077 / 0.015 (NDMI). So the binary flag does not matter in this AOI; the continuous cos i may.
 - **Diagnostic against SCL class 2** (20 m SCL grid; modelled shadow taken from the 30 m cell containing each 20 m cell centre; 415 scenes with class 2 present, 217 with baseline < 04.00 and 198 >= 04.00; a diagnostic, not a calibration):
-  class 2 covers a median 0.17 % (max 1.27 %) of the AOI before 04.00 and 0.023 % (max 0.96 %) from 04.00; modelled shadow covers at most 2e-5. P(modelled | class 2) has median 0 (max 0.0085 before, 0.0207 from 04.00); P(class 2 | modelled)
-  is defined in 35 / 18 scenes with median 0 (max 0.75 / 1.0). The chance level (the AOI share of each) is below 1e-4 for the model, so the two disagree on where shadow is. What the data do show: from 04.00, class 2 pixels have lower cos i
-  than clear pixels in 191 of 198 scenes (median cos_i_mean 0.791 vs 0.853, median difference -0.066), as expected if class 2 is topographic shadow; before 04.00 there is no such difference (0.851 vs 0.848, lower in 104 of 217 scenes),
-  consistent with ADR 0010 (class 2 then also held dark soil and burns). SCL class 2 therefore tracks low-illumination slopes better than the geometric flag does; it is kept as clear (ADR 0012) and its removal remains a sensitivity option for M1.6.
+  class 2 covers a median 0.17 % (max 1.27 %) of the AOI before 04.00 and 0.023 % (max 0.96 %) from 04.00; modelled shadow covers at most 2.4e-5 of the 20 m-grid AOI (`scl2_vs_model.csv`, `share_model`; the 1.8e-5 above is the maximum on the 10 m grid in `scene_shadow.csv`; the two grids sample the same 30 m cells differently). P(modelled | class 2) has median 0 (max 0.0085 before, 0.0207 from 04.00); P(class 2 | modelled)
+  is defined in 35 / 18 scenes with median 0 (max 0.75 / 1.0). The chance level (the AOI share of each) is below 1e-4 for the model, so the two disagree on where shadow is.
+  Class 2 is rare (shares above) and its pixels are not clearly shadowed: from 04.00 their mean cos i is 0.791 (median over 198 scenes) against 0.853 for clear pixels (median difference -0.066, lower in 191 of 198 scenes), but 0.791 is
+  about what a *flat* surface gets at the NEM sun (sin of 52-54 degrees = 0.79-0.81), so these are not steeply back-lit slopes. Before 04.00 there is no difference (0.851 vs 0.848, lower in 104 of 217 scenes), consistent with ADR 0010
+  (class 2 then also held dark soil and burns). The difference is confounded by land cover: dark canopy on steep faces is darker in every band, and the classifier may call those pixels class 2 without any terrain shadow.
+  This diagnostic therefore does **not** show that class 2 tracks low illumination better than the geometric flag. Masking class 2 in M1.6 could preferentially remove dark conifer or forest pixels on steep faces, which are the Module A target;
+  class 2 stays kept as clear (ADR 0012) and any change must be tested against that risk.
 - **Illumination vs reflectance** (SWM 2023, NEM 2023, deciles of cos_i_mean): median B08 *falls* with cos i (SWM 0.370 in the least-lit decile to 0.315 in the most lit; NEM 0.313 to 0.282; Pearson r at no shift -0.298 and -0.144).
   This is the opposite of an illumination effect and is confounded by land cover (steep faces are forest, gentle ground tea, grass and settlement; not masked until M1.4). It supports no calibration.
-- **Alignment check inconclusive.** The correlation between composite B08 and cos_i_mean over shifts of +-3 px (10 m) varies monotonically, with its maximum on the edge of the window (SWM 2023 at dy +3, dx -3; NEM 2023 at dy -3, dx -3), so the horizontal
-  registration cannot be confirmed or refuted by it. A high-pass variant (31 x 31 px box mean removed; scratch run, not in the code) also showed no consistent maximum (|r| <= 0.19). The DEM's stated 6 m CE90 (0.6 px of 10 m) is relied on.
+- **Alignment on a known feature: the flattened lakes.** The DEM flattens water bodies. Two lakes are visible as zero-gradient cores: 1244.0 m (8 core cells, 37 cells at the lake height, 30 m cells) and 1231.5 m (7 and 35 cells). The lake mask was
+  correlated with the per-pixel frequency of SCL class 6 (water / observations with SCL 4, 5 or 6, no cut, so no threshold is introduced) from 118 scenes with baseline >= 04.00 and clear_fraction > 0.5. The SCL was re-read in 800 m windows
+  around each lake (the cached M1.1 masks cannot separate class 6). Offsets of +-60 m in 10 m steps on a 10 m lattice aligned with the 20 m SCL grid; positive = S2 water lies east / north of the DEM lake (sign convention unit-tested):
+  - lake 1: r = 0.679 at (+20 m E, +10 m N) against 0.663 at no offset; bootstrap over scenes (300 resamples, 2.5-97.5 %) dx 10 to 20 m, dy 0 to 10 m; frequency-weighted centroid offset (+24, +14) m.
+  - lake 2: r = 0.599 at (+30, +30) against 0.551 at no offset; bootstrap dx 10 to 30 m, dy 10 to 30 m; centroid offset (+23, +55) m.
+  - The zero-gradient cores alone (7-8 cells) are unstable: (-10, -10) with r 0.560 and (+20, +50) with r 0.621.
+  Reading: the S2 water lies roughly 10-30 m east and north of the DEM lakes, which is 0.3-1 DEM cell and 1-3 S2 pixels. That is at the limit of the resolution (30 m DEM cells, 20 m SCL, 10 m steps, so about +-15 m) and the bootstrap
+  covers only scene sampling, not the systematic mismatch between the DEM's water polygon and S2's water (the DEM lake is larger and extends along the channel). The offset is reported, not applied, and the DEM is not shifted.
+  (A cruder centroid check by the reviewer suggested the S2 water is 10-20 m south-east of the DEM lakes; this check finds the north component positive with two independent estimators, so the north-south sign is not settled by either.)
+  Consequence: 30 m derived layers (slope, aspect, cos i) can be displaced by up to about one cell against the 10 m imagery; read patch attributes (M1.7) at cell level, not pixel level.
+- **Weak check: composite B08 against cos_i_mean.** Shifts of +-3 px (10 m): the strongest |r| is SWM 2023 dy -3, dx +3, r = -0.340 (r at no shift -0.298) and NEM 2023 dy +3, dx +3, r = -0.246 (-0.144), both on the edge of the window; r varies
+  monotonically with shift, so there is no interior maximum. (An earlier version picked the signed maximum, which is the weakest relationship, and quoted the wrong shifts.) The check is weak because cos_i_mean is in 30 m blocks, a composite mixes
+  many dates and sun angles, and a land-cover trend dominates. A high-pass variant (31 x 31 px box mean removed; scratch run, not in the code) also showed no consistent maximum (|r| <= 0.19). It is kept only as a weak consistency check.
 
 ## Consequences
 
 - Downstream (M1.6, M1.7) carry both columns: all pixels and D6-unflagged pixels, plus `cos_i_mean` for a sensitivity test. Expect identical results for the binary flag in this AOI; do not report "terrain-flagged" as if it removed shaded hillsides.
   What would remove them: a cos i cut (needs a justification from the disturbance threshold, deferred), SCL class 2 masking for baseline >= 04.00 scenes (ADR 0012 decision to revisit), or a band-ratio illumination correction (needs reflectance, so a rerun).
-- The flag is a DSM flag: it mixes terrain and the canopy of 2011-2015 (ADR 0015).
+- The flag is a DSM flag: it mixes terrain and the canopy of 2011-2015 (ADR 0015). In particular cos i and slope at stand edges are partly caused by the 2011-2015 canopy (20-30 m high edges), so `cos_i_mean` must not be
+  used to "correct" edge pixels in M1.6 without a DTM.
+- **For M1.6:** compare composites of the **same season** across years (the sun geometry of a season repeats), and record the per-pixel difference in `cos_i_mean` between the two compared composites next to every change,
+  so that an illumination difference is visible beside a disturbance signal.
+- **Buffer guard.** `scene_shadow` and `composite_shadow` raise when horizon_buffer_m(z_min, elevation, 2527 m) exceeds the buffer (39 cells = 1170 m here). z_min is the minimum inside the AOI polygon (1044.47 m, buffered load); for the whole
+  bounding box the minimum is 1008.41 m, which would need 1170.31 m (0.3 m over the buffer), but those corner cells lie outside the polygon and are NaN in the outputs. Putting the guard in found this; the outputs were not changed by it.
+  **Landsat 5/7 winter sun elevations in the 40s need a wider buffer**: at 44 degrees (1044 m minimum) W = 1535 m (52 cells, 1560 m) against 1170 m here. The statement "the flag is almost empty" must not be carried to Landsat scenes.
 - The 30 m flag is blocky at 10 m, and bilinear smoothing lowers extreme slopes, so self-shadow may be under-flagged slightly.
-- Cost: 691 scenes took 449 s in the full run (plus 31 s for the two pilot windows), about 0.7 s per scene including aggregation and COG writing, peak 0.70 GB; the MTD_TL check (691 downloads, 8 threads) 108 s; the SCL class 2 comparison 214 s.
-  The 43 shadow COGs plus tables take 147 MB in `outputs/M1.3/` (141 MB for the COGs).
+- Cost: 691 scenes took 449 s in the full run (plus 31 s for the two pilot windows), about 0.7 s per scene including aggregation and COG writing, peak 0.70 GB; the MTD_TL check (691 downloads, 8 threads) 107.7 s; the SCL class 2 comparison 214.0 s.
+  Disk (decimal MB, `du -b`): the 43 shadow COGs 146,966,404 bytes = 147.0 MB; the whole `outputs/M1.3/` directory 154,105,329 bytes = 154.1 MB (with the lake check, tables and PNGs). The lake check took 45 s (118 SCL window reads x 2 lakes, 8 threads).
 - Revisit if the AOI moves to steeper terrain or lower sun, if a DTM is adopted, or if M1.6 shows that cos_i_mean explains disturbance-signal variance.

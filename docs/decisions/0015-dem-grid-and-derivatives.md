@@ -54,8 +54,11 @@ The median agrees with the 15.5 degree figure in ADR 0009 (difference 0.36 degre
 ## Consequences
 
 - **The slope is the slope of the canopy surface**, not of the ground. Stand edges 20-30 m high create false slopes and canopy cast shadows, and stands opened since 2011-2015 still appear raised. Module C
-  (watershed risk) needs a DTM decision before it uses these slopes. The README and every 3D view say "DSM".
+  (watershed risk) needs a DTM decision before it uses these slopes. The README and every 3D view say "DSM" (the on-view note reads "DEM: Copernicus GLO-30 DSM (canopy included)").
+- Slope, aspect and cos i at stand edges are partly caused by the 2011-2015 canopy, so `cos_i_mean` must not be used to "correct" edge pixels in M1.6 without a DTM.
+- **Horizontal alignment** was checked on the two flattened lakes against Sentinel-2 SCL class 6 frequency (ADR 0016): S2 water lies about 10-30 m east and north of the DEM lakes, at the limit of the resolution (+-15 m). The 6 m CE90 in the
+  handbook is not contradicted at 30 m cell size but cannot be confirmed either; nothing is shifted. 30 m layers can be displaced by up to about one cell against the imagery.
 - Slopes at 30 m underestimate peaks (bilinear smoothing) and cannot resolve features narrower than about 60 m (the Horn window).
 - The 30 m flag is blocky at 10 m. M1.7 patch attributes (mean slope) should be read from `terrain_30m.tif`, not from a replicated 10 m copy.
 - Revisit if a DTM (for example FABDEM or an airborne product) is adopted, or if the AOI changes (the buffer and the nesting depend on the M1.2 grid; `composite_shadow` raises on a mismatch).
-- Cost (this machine, 4 cores, 15 GB): DEM load plus terrain rasters 6.8 s, peak 0.28 GB; the whole run peaked at 0.70 GB.
+- Cost (this machine, 4 cores, 15 GB): DEM load plus terrain rasters 6.79 s; the whole run (DEM, all shadow COGs, tables) peaked at 0.70 GB resident (the peak of the DEM step alone was not recorded).
